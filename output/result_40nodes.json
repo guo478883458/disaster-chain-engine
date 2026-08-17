@@ -1,0 +1,506 @@
+{
+  "_meta": {
+    "model": "暴雨→内涝→地质灾害 灾害链推理模型 (40节点完整版)",
+    "evidence_provided": 8,
+    "evidence_expected": 40,
+    "evidence_coverage": 0.2,
+    "missing_params": [
+      "下垫面硬化率",
+      "历史排水时间",
+      "土壤渗透性",
+      "地下水埋深",
+      "地形起伏度",
+      "地表粗糙度",
+      "地震烈度",
+      "坡向",
+      "垂直风切变",
+      "对流有效位能CAPE",
+      "岩性",
+      "应急排水能力",
+      "建筑密度",
+      "径流系数",
+      "气压",
+      "气温",
+      "汇流面积",
+      "沟谷密度",
+      "河网密度",
+      "河道水位",
+      "湖泊调蓄能力",
+      "湿度",
+      "滑坡历史密度",
+      "潮汐影响",
+      "绿地率",
+      "节理发育程度",
+      "蒸发量",
+      "距断层距离",
+      "道路积水历史频率",
+      "露点温度",
+      "风化程度",
+      "风向"
+    ]
+  },
+  "降水强度": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'降水强度'}"
+  },
+  "降水时长": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'降水时长'}"
+  },
+  "风力": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'风力'}"
+  },
+  "风向": {
+    "states": [
+      "离岸",
+      "向岸"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "湿度": {
+    "states": [
+      "干燥",
+      "湿润"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "气压": {
+    "states": [
+      "正常",
+      "偏低"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "气温": {
+    "states": [
+      "低温",
+      "适温",
+      "高温"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "露点温度": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "对流有效位能CAPE": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "垂直风切变": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "前期土壤含水量": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'前期土壤含水量'}"
+  },
+  "径流系数": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "河道水位": {
+    "states": [
+      "正常",
+      "警戒",
+      "危险"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "地下水埋深": {
+    "states": [
+      "深",
+      "浅"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "湖泊调蓄能力": {
+    "states": [
+      "强",
+      "弱"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "潮汐影响": {
+    "states": [
+      "无",
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "蒸发量": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "海拔": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'海拔'}"
+  },
+  "坡度": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'坡度'}"
+  },
+  "坡向": {
+    "states": [
+      "阴坡",
+      "阳坡"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "地形起伏度": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "汇流面积": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "河网密度": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "地表粗糙度": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "沟谷密度": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "植被覆盖": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'植被覆盖'}"
+  },
+  "土壤渗透性": {
+    "states": [
+      "好",
+      "差"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "岩性": {
+    "states": [
+      "坚硬",
+      "软弱"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "距断层距离": {
+    "states": [
+      "远",
+      "近"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "地震烈度": {
+    "states": [
+      "无",
+      "弱",
+      "强"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "风化程度": {
+    "states": [
+      "弱",
+      "中",
+      "强"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "节理发育程度": {
+    "states": [
+      "不发育",
+      "发育",
+      "很发育"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "滑坡历史密度": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "历史排水时间": {
+    "states": [
+      "快",
+      "慢"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "管网排水能力": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'管网排水能力'}"
+  },
+  "下垫面硬化率": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "道路积水历史频率": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "建筑密度": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "绿地率": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "应急排水能力": {
+    "states": [
+      "强",
+      "弱"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "暴雨强度": {
+    "states": [
+      "弱",
+      "强"
+    ],
+    "probabilities": [
+      0.28,
+      0.72
+    ]
+  },
+  "城市排水能力": {
+    "states": [
+      "强",
+      "弱"
+    ],
+    "probabilities": [
+      0.4283,
+      0.5717
+    ]
+  },
+  "土壤-水文状态": {
+    "states": [
+      "有利",
+      "不利"
+    ],
+    "probabilities": [
+      0.4283,
+      0.5717
+    ]
+  },
+  "地形因子": {
+    "states": [
+      "有利",
+      "不利"
+    ],
+    "probabilities": [
+      0.37,
+      0.63
+    ]
+  },
+  "地质因子": {
+    "states": [
+      "有利",
+      "不利"
+    ],
+    "probabilities": [
+      0.4867,
+      0.5133
+    ]
+  },
+  "内涝深度": {
+    "states": [
+      "无",
+      "浅",
+      "深"
+    ],
+    "probabilities": [
+      0.1154,
+      0.2689,
+      0.6157
+    ]
+  },
+  "地质易发性": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.4742,
+      0.5258
+    ]
+  },
+  "内涝风险": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.1565,
+      0.2372,
+      0.6063
+    ]
+  },
+  "地质灾害概率": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.4545,
+      0.5455
+    ]
+  }
+}

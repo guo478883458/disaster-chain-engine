@@ -1,0 +1,242 @@
+{
+  "_meta": {
+    "model": "暴雨→内涝→地质灾害 灾害链推理模型 (20节点完整版)",
+    "evidence_provided": 3,
+    "evidence_expected": 18,
+    "evidence_coverage": 0.1667,
+    "missing_params": [
+      "下垫面硬化率",
+      "前期土壤含水量",
+      "历史排水时间",
+      "土壤渗透性",
+      "坡向",
+      "岩性",
+      "径流系数",
+      "气压",
+      "海拔",
+      "湿度",
+      "管网排水能力",
+      "距断层距离",
+      "降水时长",
+      "风力",
+      "风向"
+    ]
+  },
+  "降水强度": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'降水强度'}"
+  },
+  "降水时长": {
+    "states": [
+      "短",
+      "长"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "风力": {
+    "states": [
+      "弱",
+      "强"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "风向": {
+    "states": [
+      "离岸",
+      "向岸"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "湿度": {
+    "states": [
+      "干燥",
+      "湿润"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "气压": {
+    "states": [
+      "正常",
+      "偏低"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "前期土壤含水量": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "径流系数": {
+    "states": [
+      "小",
+      "大"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "海拔": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "坡度": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'坡度'}"
+  },
+  "坡向": {
+    "states": [
+      "阴坡",
+      "阳坡"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "植被覆盖": {
+    "error": "Can't have the same variables in both `variables` and `evidence`. Found in both: {'植被覆盖'}"
+  },
+  "土壤渗透性": {
+    "states": [
+      "好",
+      "差"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "岩性": {
+    "states": [
+      "坚硬",
+      "软弱"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "距断层距离": {
+    "states": [
+      "远",
+      "近"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "历史排水时间": {
+    "states": [
+      "快",
+      "慢"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "管网排水能力": {
+    "states": [
+      "强",
+      "弱"
+    ],
+    "probabilities": [
+      0.5,
+      0.5
+    ]
+  },
+  "下垫面硬化率": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.3333,
+      0.3333,
+      0.3333
+    ]
+  },
+  "暴雨强度": {
+    "states": [
+      "弱",
+      "强"
+    ],
+    "probabilities": [
+      0.0625,
+      0.9375
+    ]
+  },
+  "内涝深度": {
+    "states": [
+      "无",
+      "浅",
+      "深"
+    ],
+    "probabilities": [
+      0.0275,
+      0.0639,
+      0.9086
+    ]
+  },
+  "地质易发性": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.1022,
+      0.8978
+    ]
+  },
+  "内涝风险": {
+    "states": [
+      "低",
+      "中",
+      "高"
+    ],
+    "probabilities": [
+      0.0525,
+      0.1555,
+      0.792
+    ]
+  },
+  "地质灾害概率": {
+    "states": [
+      "低",
+      "高"
+    ],
+    "probabilities": [
+      0.1801,
+      0.8199
+    ]
+  }
+}

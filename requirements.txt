@@ -1,0 +1,6 @@
+# 灾害链推理引擎 v2
+pgmpy>=1.0
+matplotlib
+pandas
+networkx
+pyyaml
