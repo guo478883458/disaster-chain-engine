@@ -1,0 +1,156 @@
+# ============================================================================
+# 北京地区子区域定义
+# ============================================================================
+# 北京 16 行政区，含所属水系和地理方位信息。
+# == 行政区划信息 ==
+# 中心城区：东城区、西城区、朝阳区、海淀区、丰台区、石景山区
+# 近郊区：门头沟区、房山区、通州区、顺义区、昌平区、大兴区
+# 远郊区：怀柔区、平谷区、密云区、延庆区
+# == 水系信息 ==
+# 永定河水系：门头沟（上游）→ 房山 → 大兴
+# 潮白河水系：密云（上游）→ 顺义 → 通州
+# 北运河水系：昌平（上游）→ 海淀 → 朝阳 → 通州
+# == 地理方位 ==
+# 西部山区：门头沟、延庆
+# 北部山区：怀柔、密云
+# 南部平原：大兴、房山、通州
+# 东部平原：顺义、平谷
+# ============================================================================
+
+regions:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 中心城区（6 区）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 东城区
+    parent: 北京市
+    attributes:
+      area_km2: 41.84
+      population: 70.9
+      river_system: 北运河
+      geographic: 中心城区
+
+  - name: 西城区
+    parent: 北京市
+    attributes:
+      area_km2: 50.70
+      population: 110.6
+      river_system: 北运河
+      geographic: 中心城区
+
+  - name: 朝阳区
+    parent: 北京市
+    attributes:
+      area_km2: 460.16
+      population: 345.1
+      river_system: 北运河
+      geographic: 中心城区
+
+  - name: 海淀区
+    parent: 北京市
+    attributes:
+      area_km2: 430.73
+      population: 313.2
+      river_system: 北运河
+      geographic: 中心城区
+
+  - name: 丰台区
+    parent: 北京市
+    attributes:
+      area_km2: 305.87
+      population: 201.9
+      river_system: 永定河
+      geographic: 中心城区
+
+  - name: 石景山区
+    parent: 北京市
+    attributes:
+      area_km2: 84.38
+      population: 56.8
+      river_system: 永定河
+      geographic: 中心城区
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 近郊区（6 区）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 门头沟区
+    parent: 北京市
+    attributes:
+      area_km2: 1447.85
+      population: 39.2
+      river_system: 永定河
+      geographic: 西部山区
+
+  - name: 房山区
+    parent: 北京市
+    attributes:
+      area_km2: 2019.19
+      population: 131.3
+      river_system: 永定河
+      geographic: 西南平原
+
+  - name: 通州区
+    parent: 北京市
+    attributes:
+      area_km2: 905.79
+      population: 184.0
+      river_system: 北运河
+      geographic: 东南平原
+
+  - name: 顺义区
+    parent: 北京市
+    attributes:
+      area_km2: 1020.89
+      population: 132.6
+      river_system: 潮白河
+      geographic: 东部平原
+
+  - name: 昌平区
+    parent: 北京市
+    attributes:
+      area_km2: 1343.54
+      population: 226.9
+      river_system: 北运河
+      geographic: 北部平原
+
+  - name: 大兴区
+    parent: 北京市
+    attributes:
+      area_km2: 1036.34
+      population: 184.5
+      river_system: 永定河
+      geographic: 南部平原
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 远郊区（4 区）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 怀柔区
+    parent: 北京市
+    attributes:
+      area_km2: 2122.82
+      population: 44.2
+      river_system: 潮白河
+      geographic: 北部山区
+
+  - name: 平谷区
+    parent: 北京市
+    attributes:
+      area_km2: 948.24
+      population: 45.6
+      river_system: 蓟运河
+      geographic: 东部山区
+
+  - name: 密云区
+    parent: 北京市
+    attributes:
+      area_km2: 2225.92
+      population: 52.6
+      river_system: 潮白河
+      geographic: 北部山区
+
+  - name: 延庆区
+    parent: 北京市
+    attributes:
+      area_km2: 1993.75
+      population: 34.7
+      river_system: 永定河
+      geographic: 西北山区

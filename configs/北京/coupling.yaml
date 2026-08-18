@@ -1,0 +1,222 @@
+# ============================================================================
+# 北京地区区域间耦合边定义
+# ============================================================================
+# 双通道耦合：气象通道（雨带西→东移动）+ 水文通道（河流上游→下游）
+#
+# 节点状态映射说明：
+#   source_state：源节点的最可能状态（触发条件）
+#   target_state：目标节点应设置的证据状态
+#   - 气象边：暴雨强度（源）→ 暴雨强度（目标），状态都是 [弱, 强]
+#     source_state: 强, target_state: 强
+#   - 水文边：内涝深度（源，状态 [无, 浅, 深]）→ 土壤-水文状态（目标，状态 [有利, 不利]）
+#     source_state: 深, target_state: 不利
+#
+# 耦合机制：
+#   当源节点最可能状态 == source_state 时，以权重 w 将 target_state 作为证据传入目标区域。
+#   w > 0.5 的边强耦合（设置证据），w ≤ 0.5 的边弱耦合（不设置证据，仅报告级联）。
+#   级联 Δ 按 w 缩放，体现权重梯度。
+#
+# 气象通道权重说明：
+#   - 强影响（0.65）：直接相邻且在主雨带路径上
+#   - 中影响（0.50）：相邻但非主路径
+#   - 弱影响（0.45）：间隔区
+#
+# 水文通道权重说明：
+#   - 强影响（0.45）：同水系直接上下游
+#   - 中影响（0.30~0.40）：同水系但间隔一级或支流
+# ============================================================================
+
+coupling_edges:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 气象通道（雨带移动，西→东 / 西北→东南）
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 主雨带路径：延庆→昌平→海淀→朝阳→通州
+  - source: 延庆区
+    target: 昌平区
+    channel: meteorological
+    weight: 0.65
+    description: "雨带从延庆向昌平移动（西北→东南主路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 昌平区
+    target: 海淀区
+    channel: meteorological
+    weight: 0.65
+    description: "雨带从昌平向海淀移动（主路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 海淀区
+    target: 朝阳区
+    channel: meteorological
+    weight: 0.65
+    description: "雨带从海淀向朝阳移动（主路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 朝阳区
+    target: 通州区
+    channel: meteorological
+    weight: 0.60
+    description: "雨带从朝阳向通州移动（主路径延伸）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # 北部支线：怀柔→顺义→通州
+  - source: 怀柔区
+    target: 顺义区
+    channel: meteorological
+    weight: 0.55
+    description: "雨带从怀柔向顺义移动（北部支线）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 顺义区
+    target: 通州区
+    channel: meteorological
+    weight: 0.55
+    description: "雨带从顺义向通州移动（北部支线汇入）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # 西部补充：门头沟→丰台→大兴
+  - source: 门头沟区
+    target: 丰台区
+    channel: meteorological
+    weight: 0.50
+    description: "雨带从门头沟向丰台移动（西部支线）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 丰台区
+    target: 大兴区
+    channel: meteorological
+    weight: 0.50
+    description: "雨带从丰台向大兴移动（西部支线）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # 延庆→门头沟（山区联动）
+  - source: 延庆区
+    target: 门头沟区
+    channel: meteorological
+    weight: 0.45
+    description: "雨带从延庆向门头沟移动（山区联动）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # 密云→平谷
+  - source: 密云区
+    target: 平谷区
+    channel: meteorological
+    weight: 0.45
+    description: "雨带从密云向平谷移动（东部支线）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 水文通道（河流级联，上游→下游）
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 永定河水系：门头沟（上游）→房山→大兴（下游）
+  - source: 门头沟区
+    target: 房山区
+    channel: hydrological
+    weight: 0.45
+    description: "永定河上游（门头沟）来水→房山河段水位上升"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 房山区
+    target: 大兴区
+    channel: hydrological
+    weight: 0.40
+    description: "永定河房山段→大兴段，下游河道水位继续上升"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  # 潮白河水系：密云（上游）/怀柔→顺义→通州（下游）
+  - source: 密云区
+    target: 顺义区
+    channel: hydrological
+    weight: 0.45
+    description: "潮白河上游（密云水库）来水→顺义段水位上升"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 怀柔区
+    target: 顺义区
+    channel: hydrological
+    weight: 0.35
+    description: "怀柔雁栖河→潮白河顺义段，支流汇入"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 顺义区
+    target: 通州区
+    channel: hydrological
+    weight: 0.40
+    description: "潮白河顺义段→通州段，下游河道水位上升"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  # 北运河水系：昌平（上游）→海淀→朝阳→通州（下游）
+  - source: 昌平区
+    target: 海淀区
+    channel: hydrological
+    weight: 0.35
+    description: "北运河上游（昌平）来水→海淀段"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 海淀区
+    target: 朝阳区
+    channel: hydrological
+    weight: 0.35
+    description: "北运河海淀段→朝阳段"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 朝阳区
+    target: 通州区
+    channel: hydrological
+    weight: 0.40
+    description: "北运河朝阳段→通州段（北运河、潮白河在通州汇合）"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
