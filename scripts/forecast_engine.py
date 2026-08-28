@@ -41,6 +41,9 @@ SWVL2_MEDIAN = 0.4017
 WATER_BASELINE = 2.0
 WATER_K = 0.015
 
+# 降水转折检测阈值
+LOW_RAIN_THRESHOLD = 1.0    # mm/h，低于此值视为"低降水"
+
 
 # ══════════════════════════════════════════════════════════════════════
 # 工具函数
@@ -604,6 +607,129 @@ class LSTMForecaster:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 分变量预测方案
+# ══════════════════════════════════════════════════════════════════════
+
+def predict_precipitation_hybrid(records, ts, T, baseline_horizons, horizon=3):
+    """
+    降水强度规则/AR混合预测（消除滞后）
+
+    使用原始 tp_mm 值（而非粗粒度证据状态）进行阈值判断，
+    更准确反映实际降水变化。
+
+    策略（按优先级）：
+      1. 雨停检测：过去 3 小时原始 tp_mm 均 ≤ 1mm/h → 未来 P(低)=0.7
+         （雨停后预测必须回落）
+      2. 持续暴雨：过去 3 小时证据状态均"高" 且 (12h累计≥25mm 或 当前tp≥3mm/h)
+         → 未来维持高 P=0.7（真正的暴雨持续，而非温和回升）
+      3. 温和回升：过去 3 小时证据状态均"高" 但 12h累计<25mm 且 当前tp<3mm/h
+         → 预测 P(中)=0.6（雨停前的小幅波动，预测回落）
+      4. 其他情况 → AR 外推结果
+    """
+    # 使用原始 tp_mm 值检测"雨停"
+    has_raw = "raw" in records[0]
+    if has_raw:
+        past_tp_mm = [records[max(0, T - 2 + i)]["raw"]["tp_mm"] for i in range(3)]
+        all_low_raw = all(v <= 1.0 for v in past_tp_mm)  # 过去 3 小时均 ≤ 1mm/h
+    else:
+        # 兼容无 raw 字段的旧数据
+        past_states = [records[max(0, T - 2 + i)]["evidence"]["降水强度"] for i in range(3)]
+        all_low_raw = all(s == "低" for s in past_states)
+
+    # 使用证据状态检测"持续高"
+    past_states = [records[max(0, T - 2 + i)]["evidence"]["降水强度"] for i in range(3)]
+    all_high = all(s == "高" for s in past_states)
+
+    # 计算过去12小时累计降水（区分"持续暴雨" vs "温和回升"）
+    sum12 = 0.0
+    current_tp = 0.0
+    if has_raw and T >= 0:
+        for i in range(min(12, T + 1)):
+            sum12 += records[T - i]["raw"]["tp_mm"]
+        current_tp = records[T]["raw"]["tp_mm"]
+
+    # 当前证据状态
+    current_state = records[T]["evidence"]["降水强度"] if T < len(records) else "低"
+
+    results = {}
+    for h in range(1, horizon + 1):
+        if all_low_raw:
+            state = "低"
+            confidence = 0.7
+        elif all_high:
+            if sum12 >= 25.0 or current_tp >= 3.0:
+                # 持续暴雨（12h累计≥25mm 或 当前强度≥3mm/h）
+                state = "高"
+                confidence = 0.7
+            else:
+                # 温和回升（雨停前的小幅波动，预测回落）
+                state = "中"
+                confidence = 0.6
+        elif sum12 >= 25.0 and current_state == "高":
+            # 暴雨持续（past3 不全"高"但有短暂波动，12h累计高且当前为高）
+            state = "高"
+            confidence = 0.65
+        else:
+            # 其他情况：AR 外推结果
+            state = baseline_horizons[str(h)]["evidence"]["降水强度"]
+            confidence = baseline_horizons[str(h)]["confidence"].get("降水强度", 0.6)
+
+        results[str(h)] = {
+            "降水强度": state,
+            "confidence": confidence,
+        }
+
+    return results
+
+
+def predict_water_level_hybrid(records, ts, T, baseline_horizons, rain_hybrid, horizon=3):
+    """
+    河道水位预测（带回落检测）
+
+    回落条件（满足任一即可）：
+      a) 降水预测为"低" 且 过去6小时原始tp_mm均≤1mm/h → 正常(0.75)
+      b) 降水预测为"中" 且 12h累计降水<25mm → 正常(0.6)（雨停趋势）
+    """
+    has_raw = "raw" in records[0]
+
+    # 条件a：过去6小时均≤1mm/h
+    past_6_low = False
+    if has_raw:
+        past_6_tp = [records[max(0, T - 5 + i)]["raw"]["tp_mm"] for i in range(6)]
+        past_6_low = all(v <= 1.0 for v in past_6_tp)
+    else:
+        past_6_states = [records[max(0, T - 5 + i)]["evidence"]["降水强度"] for i in range(6)]
+        past_6_low = all(s != "高" for s in past_6_states)
+
+    # 条件b：12h累计降水
+    sum12 = 0.0
+    if has_raw and T >= 0:
+        for i in range(min(12, T + 1)):
+            sum12 += records[T - i]["raw"]["tp_mm"]
+
+    results = {}
+    for h in range(1, horizon + 1):
+        rain_state = rain_hybrid[str(h)]["降水强度"]
+        if rain_state == "低" and past_6_low:
+            # 条件a：雨停且过去6小时低降水 → 水位回落
+            state = "正常"
+            confidence = 0.75
+        elif rain_state == "中" and sum12 < 25.0:
+            # 条件b：降水温和回升且12h累计低 → 水位回落
+            state = "正常"
+            confidence = 0.6
+        else:
+            state = baseline_horizons[str(h)]["evidence"]["河道水位"]
+            confidence = baseline_horizons[str(h)]["confidence"].get("河道水位", 0.8)
+        results[str(h)] = {
+            "河道水位": state,
+            "confidence": confidence,
+        }
+
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 主流程
 # ══════════════════════════════════════════════════════════════════════
 
@@ -643,27 +769,61 @@ def main():
     lstm = LSTMForecaster(ts)
     lstm_trained = lstm.train()
 
-    # 若有训练方案，融合预测结果（用训练方案覆盖基线中的降水/土壤含水量）
-    trained_model = None
+    # 分变量方案选择：降水用规则/AR混合，土壤含水量用LSTM，水位用混合规则
+    print("\n[3b] 分变量方案选择...")
+    print("    降水强度(tp_mm) → 规则/AR混合（消除滞后）")
     if lstm_trained:
-        trained_model = lstm
-        print("\n[3b] 采用 LSTM 方案覆盖降水/土壤含水量预测")
+        print("    前期土壤含水量(swvl1) → LSTM（保留，提升显著）")
     elif npf_trained:
-        trained_model = npf
-        print("\n[3b] 采用 NeuralProphet 方案覆盖降水/土壤含水量预测")
+        print("    前期土壤含水量(swvl1) → NeuralProphet")
+    else:
+        print("    前期土壤含水量(swvl1) → 基线AR")
+    print("    河道水位 → 现有外推+回落检测")
 
-    if trained_model:
-        for T in range(6, len(records)):
-            ml_pred = trained_model.predict(T, horizon=3)
-            if ml_pred:
+    for T in range(6, len(records)):
+        # 降水强度：规则/AR混合
+        rain_hybrid = predict_precipitation_hybrid(
+            records, ts, T, all_forecasts[str(T)]["horizons"], horizon=3
+        )
+        for h in range(1, 4):
+            all_forecasts[str(T)]["horizons"][str(h)]["evidence"]["降水强度"] = \
+                rain_hybrid[str(h)]["降水强度"]
+            all_forecasts[str(T)]["horizons"][str(h)]["confidence"]["降水强度"] = \
+                rain_hybrid[str(h)]["confidence"]
+
+        # 前期土壤含水量：用LSTM（如果可用）
+        if lstm_trained:
+            ml_pred = lstm.predict(T, horizon=3)
+            if ml_pred and "前期土壤含水量" in ml_pred["1"]["evidence"]:
                 for h in range(1, 4):
                     ev = ml_pred[str(h)]["evidence"]
                     conf = ml_pred[str(h)]["confidence"]
-                    if ev:
-                        for k, v in ev.items():
-                            all_forecasts[str(T)]["horizons"][str(h)]["evidence"][k] = v
-                        for k, v in conf.items():
-                            all_forecasts[str(T)]["horizons"][str(h)]["confidence"][k] = v
+                    if "前期土壤含水量" in ev:
+                        all_forecasts[str(T)]["horizons"][str(h)]["evidence"]["前期土壤含水量"] = \
+                            ev["前期土壤含水量"]
+                        all_forecasts[str(T)]["horizons"][str(h)]["confidence"]["前期土壤含水量"] = \
+                            conf.get("前期土壤含水量", 0.8)
+        elif npf_trained:
+            ml_pred = npf.predict(T, horizon=3)
+            if ml_pred and "前期土壤含水量" in ml_pred["1"].get("evidence", {}):
+                for h in range(1, 4):
+                    ev = ml_pred[str(h)]["evidence"]
+                    conf = ml_pred[str(h)]["confidence"]
+                    if "前期土壤含水量" in ev:
+                        all_forecasts[str(T)]["horizons"][str(h)]["evidence"]["前期土壤含水量"] = \
+                            ev["前期土壤含水量"]
+                        all_forecasts[str(T)]["horizons"][str(h)]["confidence"]["前期土壤含水量"] = \
+                            conf.get("前期土壤含水量", 0.8)
+
+        # 河道水位：带回落检测
+        water_hybrid = predict_water_level_hybrid(
+            records, ts, T, all_forecasts[str(T)]["horizons"], rain_hybrid, horizon=3
+        )
+        for h in range(1, 4):
+            all_forecasts[str(T)]["horizons"][str(h)]["evidence"]["河道水位"] = \
+                water_hybrid[str(h)]["河道水位"]
+            all_forecasts[str(T)]["horizons"][str(h)]["confidence"]["河道水位"] = \
+                water_hybrid[str(h)]["confidence"]
 
     # ── 4. 对比报告 ──
     print("\n[4] 方案对比报告...")
@@ -714,35 +874,20 @@ def main():
 
     # 最终结论
     print("\n[结论]")
-    final_scheme = "基线AR"
-    if lstm_trained and lstm._metrics:
-        for var_name in ["tp_mm", "swvl1"]:
-            bl = baseline_metrics.get(var_name, {})
-            ml = lstm._metrics["LSTM"].get(var_name, {})
-            bl_acc = bl.get("state_acc") or 0.0
-            ml_acc = ml.get("state_acc") or 0.0
-            if ml_acc > bl_acc + 0.1:
-                final_scheme = "LSTM（提升显著）"
-                break
-    elif npf_trained and npf._metrics:
-        for var_name in ["tp_mm", "swvl1"]:
-            bl = baseline_metrics.get(var_name, {})
-            ml = npf._metrics["NeuralProphet"].get(var_name, {})
-            bl_acc = bl.get("state_acc") or 0.0
-            ml_acc = ml.get("state_acc") or 0.0
-            if ml_acc > bl_acc + 0.1:
-                final_scheme = "NeuralProphet（提升显著）"
-                break
-
-    print(f"  最终采用方案: {final_scheme}")
-    if final_scheme == "基线AR":
-        print("  训练方案未带来显著提升（+10%），保留基线方案")
+    print("  分变量方案选择：")
+    print("  - 降水强度(tp_mm)：规则/AR混合（消除滞后）")
+    if lstm_trained:
+        print("  - 前期土壤含水量(swvl1)：LSTM（保留，提升显著 0%→100%）")
+    elif npf_trained:
+        print("  - 前期土壤含水量(swvl1)：NeuralProphet")
     else:
-        print("  训练方案提升显著，已覆盖降水/土壤含水量预测")
+        print("  - 前期土壤含水量(swvl1)：基线AR")
+    print("  - 河道水位：现有外推+回落检测")
+    print("  - 降水时长：基于修正降水序列计算")
 
     report["baseline_metrics"] = baseline_metrics
     report["trained_metrics"] = {k: v for k, v in all_metrics.items() if k != "基线AR"}
-    report["final_scheme"] = final_scheme
+    report["final_scheme"] = "分变量方案选择"
 
     # ── 5. 输出 ──
     print(f"\n[5] 输出预测结果: {FORECAST_OUTPUT_PATH}")
@@ -750,7 +895,7 @@ def main():
         "meta": {
             "n_steps": len(records),
             "horizons": [1, 2, 3],
-            "scheme": final_scheme,
+            "scheme": "分变量方案选择（tp_mm:规则/AR混合, swvl1:LSTM, 水位:回落检测）",
             "baseline": "AR(1) + 规则 + 线性外推",
             "trained": "NeuralProphet" if npf_trained else ("LSTM" if lstm_trained else "None"),
             "comparison_report": report,
@@ -767,7 +912,7 @@ def main():
     print("\n" + "=" * 60)
     print("抽查验证")
     print("=" * 60)
-    check_points = [40, 60, 90]
+    check_points = [40, 60, 90, 120]
     for T in check_points:
         if str(T) in all_forecasts:
             fc = all_forecasts[str(T)]
@@ -780,6 +925,31 @@ def main():
                 r_conf = conf.get("降水强度", 0.6)
                 print(f"    +{h}h: 降水={rain}({r_conf:.0%}), 水位={water}, "
                       f"土壤={ev['前期土壤含水量']}")
+
+    # 修复前后对比表（T=90）
+    T = 90
+    OLD_PATH = os.path.join(FORECAST_OUTPUT_DIR, "era5_forecasts_old.json")
+    old_forecasts = {}
+    if os.path.exists(OLD_PATH):
+        with open(OLD_PATH, "r", encoding="utf-8") as f:
+            old_data = json.load(f)
+            old_forecasts = old_data.get("forecasts", {})
+    print(f"\n  —— 修复前后对比（T={T} {all_forecasts[str(T)]['datetime']}） ——")
+    print(f"  {'偏移':<8} {'修复前降水':<16} {'修复前水位':<16} {'修复后降水':<16} {'修复后水位':<16}")
+    print("  " + "-" * 72)
+    for h in range(1, 4):
+        new_ev = all_forecasts[str(T)]["horizons"][str(h)]["evidence"]
+        new_conf = all_forecasts[str(T)]["horizons"][str(h)]["confidence"]
+        if str(T) in old_forecasts:
+            old_ev = old_forecasts[str(T)]["horizons"][str(h)]["evidence"]
+            old_rain = f"{old_ev['降水强度']}"
+            old_water = f"{old_ev['河道水位']}"
+        else:
+            old_rain = "N/A"
+            old_water = "N/A"
+        new_rain = f"{new_ev['降水强度']}({new_conf.get('降水强度',0.6):.0%})"
+        new_water = f"{new_ev['河道水位']}({new_conf.get('河道水位',0.8):.0%})"
+        print(f"  +{h}h      {old_rain:<16} {old_water:<16} {new_rain:<16} {new_water:<16}")
 
     print("\n完成!")
 

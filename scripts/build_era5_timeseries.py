@@ -249,6 +249,15 @@ def main():
             "hour": t,
             "datetime": dt_str,
             "evidence": evidence,
+            "raw": {
+                "tp_mm": float(tp_hourly[t]),
+                "wind_speed": float(wind_speeds[t]),
+                "t2m": float(t2m_vals[t]),
+                "d2m": float(d2m_vals[t]),
+                "swvl1": float(swvl1_vals[t]),
+                "swvl2": float(swvl2_vals[t]),
+                "evabs": float(evabs_vals[t]),
+            },
         })
 
     # ── 5. 输出 ──
