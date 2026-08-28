@@ -263,6 +263,10 @@ def init_session_state():
         "_era5_stream_last_count": 0,  # 上次轮询时的已接收条数
         "_era5_stream_received_data": [],  # 数据流模式已接收数据列表
         "_era5_stream_results_history": [],  # 数据流模式各点推理结果
+        # 数据流模式 - 图片通道
+        "_stream_image_last_count": 0,  # 上次轮询时的图片已接收条数
+        "_stream_image_records": [],    # 已处理的图片记录 [{station, task_type, save_path, ...}]
+        "_stream_image_processing": False,  # 是否正在处理图片识别
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1598,14 +1602,20 @@ def render_zz_page():
 
 
     def _render_stream_mode(engine, geojson):
-        """数据流模式：轮询 ingest_server 接收实时数据，自动更新"""
+        """数据流模式：轮询 ingest_server 接收实时数据，自动更新（含图片通道）"""
         # 轮询 ingest_server
         st.markdown("##### 📡 数据流模式 — 实时数据接收")
         st.caption("> 需同时运行：`ingest_server.py`（接收服务） + `simulate_data_stream.py`（发包程序）")
 
         count, last_data, last_time = fetch_ingest_data()
 
-        # 显示接收状态
+        # ── 轮询图片通道状态 ──
+        status_data = poll_ingest_server()
+        image_count = status_data.get("image_received_count", 0)
+        last_image = status_data.get("last_image")
+
+        # ── JSON 通道状态 ──
+        st.markdown("**📊 JSON 数据通道**")
         col_stream = st.columns([2, 1, 1])
         with col_stream[0]:
             st.metric("已接收数据条数", count)
@@ -1624,7 +1634,33 @@ def render_zz_page():
                 except Exception:
                     st.metric("接收时间", last_time)
 
-        # 检测是否有新数据
+        # ── 图片通道状态 ──
+        st.markdown("**📷 图片通道**")
+        col_img = st.columns([2, 2, 1])
+        with col_img[0]:
+            st.metric("已接收图片数", image_count)
+        with col_img[1]:
+            if last_image:
+                img_station = last_image.get("station", "?")
+                img_task = last_image.get("task_type", "?")
+                img_file = last_image.get("original_filename", "?")
+                st.metric("最近图片", f"{img_station} {img_task}")
+            else:
+                st.metric("最近图片", "—")
+        with col_img[2]:
+            img_time = status_data.get("last_image_time")
+            if img_time:
+                try:
+                    from datetime import datetime
+                    img_dt = datetime.strptime(img_time, "%Y-%m-%d %H:%M:%S.%f")
+                    ago = (datetime.now() - img_dt).total_seconds()
+                    st.metric("接收时间", f"{ago:.0f} 秒前")
+                except Exception:
+                    st.metric("接收时间", img_time)
+            else:
+                st.metric("接收时间", "—")
+
+        # ── 检测 JSON 新数据 ──
         if count > st.session_state["_era5_stream_last_count"]:
             st.session_state["_era5_stream_last_count"] = count
             with st.spinner("⏳ 正在接收并推理最新数据…"):
@@ -1660,6 +1696,114 @@ def render_zz_page():
                         st.session_state["_era5_stream_results_history"] = res_history
 
             st.rerun()
+
+        # ── 检测图片新数据（独立处理，不阻塞 JSON 通道） ──
+        if image_count > st.session_state["_stream_image_last_count"] and not st.session_state.get("_stream_image_processing", False):
+            st.session_state["_stream_image_last_count"] = image_count
+            st.session_state["_stream_image_processing"] = True
+
+            # 处理新图片（在 spinner 中执行）
+            if last_image and last_image.get("save_path"):
+                img_path = last_image["save_path"]
+                img_station = last_image.get("station", "")
+                img_task = last_image.get("task_type", "")
+                img_file = last_image.get("original_filename", "")
+
+                district = img_station.replace("郑州-", "").strip()
+                if district not in ZHENGZHOU_DISTRICTS:
+                    district = img_station
+
+                task_labels = {"water_level": "水位尺", "road": "道路损毁", "flood": "洪水"}
+                task_label = task_labels.get(img_task, img_task)
+
+                status_placeholder = st.empty()
+                with status_placeholder:
+                    st.spinner(f"⏳ 正在识别图片（{task_label}）…")
+
+                if os.path.exists(img_path):
+                    try:
+                        # 调用 fuse_infer 的底层推理（仅单图识别 + BN 映射，不触发全量推理）
+                        from tools.fuse_infer import TASK_DISPATCH
+                        from tools.preprocess_api import map_to_bn_states
+
+                        handler = TASK_DISPATCH.get(img_task)
+                        if handler and district in ZHENGZHOU_DISTRICTS:
+                            result = handler(img_path)
+                            if "error" not in result:
+                                # 根据 task_type 收集证据字段
+                                evidence_kwargs = {}
+                                summary_parts = []
+                                if img_task == "water_level":
+                                    wl = result.get("water_level_cm")
+                                    if wl is not None:
+                                        evidence_kwargs["water_level_cm"] = wl
+                                        summary_parts.append(f"水位：{wl}cm")
+                                elif img_task == "road":
+                                    total = result.get("total_damages", 0)
+                                    evidence_kwargs["road_damage_counts"] = total
+                                    summary_parts.append(f"损毁：{total}处")
+                                elif img_task == "flood":
+                                    area = result.get("积水面积_m2")
+                                    if area is not None:
+                                        evidence_kwargs["flood_area_m2"] = area
+                                        summary_parts.append(f"积水面积：{area:.0f}m²")
+
+                                # 映射到 BN 状态
+                                bn_evidence = map_to_bn_states(**evidence_kwargs)
+
+                                # 合并到该区证据
+                                current_ev = st.session_state.get("zz_evidence", {}).get(district, {}).copy()
+                                for node, state in bn_evidence.items():
+                                    if state != "保持先验":
+                                        current_ev[node] = state
+                                st.session_state["zz_evidence"][district] = current_ev
+
+                                # 全量推理
+                                results = {}
+                                for d in ZHENGZHOU_DISTRICTS:
+                                    district_ev = st.session_state.get("zz_evidence", {}).get(d, {})
+                                    results[d] = engine.infer(district_ev)
+                                st.session_state["zz_results"] = results
+                                st.session_state["_map_cache_version"] += 1
+
+                                # 记录图片处理结果
+                                record = {
+                                    "station": img_station,
+                                    "task_type": img_task,
+                                    "filename": img_file,
+                                    "save_path": img_path,
+                                    "result": result,
+                                    "bn_evidence": bn_evidence,
+                                    "summary": " | ".join(summary_parts),
+                                }
+                                img_records = st.session_state["_stream_image_records"]
+                                img_records.append(record)
+                                if len(img_records) > 50:
+                                    img_records = img_records[-50:]
+                                st.session_state["_stream_image_records"] = img_records
+
+                                status_placeholder.success(f"📷 {img_station} {task_label}识别完成: {' | '.join(summary_parts)}")
+                            else:
+                                status_placeholder.error(f"❌ 图片识别失败: {result['error']}")
+                        else:
+                            status_placeholder.warning(f"⚠️ 不支持的任务类型: {img_task}")
+                    except Exception as e:
+                        status_placeholder.error(f"❌ 图片处理异常: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    status_placeholder.warning(f"⚠️ 图片文件不存在: {img_path}")
+
+            st.session_state["_stream_image_processing"] = False
+            st.rerun()
+
+        # ── 显示图片识别结果摘要 ──
+        img_records = st.session_state.get("_stream_image_records", [])
+        if img_records:
+            last_img_record = img_records[-1]
+            st.markdown(f"📷 **最近识别**: {last_img_record.get('station', '?')} "
+                        f"{last_img_record.get('task_type', '?')} — "
+                        f"{last_img_record.get('summary', '完成')}")
 
         current_results = st.session_state.get("zz_results", {})
         if current_results:

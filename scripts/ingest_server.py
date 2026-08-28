@@ -14,12 +14,15 @@ import os
 import queue
 import sys
 import time
+import uuid
 from datetime import datetime
 from threading import Lock
 from typing import Optional
 
+import cv2
+import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 # ── 确保能找到 v2 模块 ──
@@ -31,6 +34,20 @@ _data_lock = Lock()
 _received_count: int = 0
 _last_data: Optional[dict] = None
 _last_time: Optional[str] = None
+
+# ── 图片独立队列（避免相互阻塞） ──
+_image_queue: queue.Queue = queue.Queue()
+_image_lock = Lock()
+_image_received_count: int = 0
+_last_image: Optional[dict] = None
+_last_image_time: Optional[str] = None
+
+# ── 图片存储根目录 ──
+STREAM_UPLOADS_ROOT = r"H:\dev\disaster-data\stream_uploads"
+os.makedirs(STREAM_UPLOADS_ROOT, exist_ok=True)
+
+# ── 允许的 task_type ──
+ALLOWED_TASK_TYPES = ("water_level", "road", "flood")
 
 app = FastAPI(title="灾害链数据流接入服务", version="1.0.0")
 
@@ -78,15 +95,96 @@ async def ingest(data: SensorData):
     return {"status": "ok", "received": _received_count}
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 图片接收端点
+# ═══════════════════════════════════════════════════════════════════
+
+@app.post("/api/ingest_image")
+async def ingest_image(
+    station: str = Form(..., description="区名，如 金水区"),
+    task_type: str = Form(..., description="任务类型: water_level / road / flood"),
+    file: UploadFile = File(..., description="灾情图片"),
+):
+    """
+    接收图片上传，保存到磁盘，写入独立内存队列（image_queue）。
+
+    校验：
+      - task_type 限定 water_level/road/flood
+      - 图片非空且可解码（cv2.imread 验证）
+    """
+    global _image_received_count, _last_image, _last_image_time
+
+    # 校验 task_type
+    if task_type not in ALLOWED_TASK_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"task_type 必须为 {ALLOWED_TASK_TYPES}，收到: {task_type}")
+
+    # 校验图片内容
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+
+    # cv2 校验图片是否可解码
+    np_arr = np.frombuffer(contents, dtype=np.uint8)
+    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="图片无法解码，请确认是有效图像文件")
+
+    # 构造保存路径
+    station_dir = os.path.join(STREAM_UPLOADS_ROOT, station)
+    os.makedirs(station_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ext = os.path.splitext(file.filename or "image.jpg")[1] or ".jpg"
+    save_filename = f"{timestamp}_{task_type}_{uuid.uuid4().hex[:6]}{ext}"
+    save_path = os.path.join(station_dir, save_filename)
+
+    # 写入磁盘
+    with open(save_path, "wb") as f:
+        f.write(contents)
+
+    # 构造记录
+    image_record = {
+        "station": station,
+        "task_type": task_type,
+        "filename": save_filename,
+        "save_path": save_path,
+        "original_filename": file.filename,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+    }
+
+    with _image_lock:
+        _image_queue.put(image_record)
+        _image_received_count += 1
+        _last_image = image_record
+        _last_image_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+    return {
+        "status": "ok",
+        "image_received_count": _image_received_count,
+        "save_path": save_path,
+        "station": station,
+        "task_type": task_type,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 状态
+# ═══════════════════════════════════════════════════════════════════
+
 @app.get("/api/status")
 async def status():
-    """返回接收状态摘要"""
-    with _data_lock:
+    """返回接收状态摘要（含图片通道）"""
+    with _data_lock, _image_lock:
         return {
             "received_count": _received_count,
             "last_data": _last_data,
             "last_received_time": _last_time,
             "queue_size": _data_queue.qsize(),
+            "image_received_count": _image_received_count,
+            "last_image": _last_image,
+            "last_image_time": _last_image_time,
+            "image_queue_size": _image_queue.qsize(),
         }
 
 
@@ -107,9 +205,10 @@ def main():
     args = parser.parse_args()
 
     print(f"📡 数据流接入服务启动: http://{args.host}:{args.port}")
-    print(f"   POST /api/ingest  — 接收传感器数据")
-    print(f"   GET  /api/status  — 查询接收状态")
-    print(f"   GET  /api/health  — 健康检查")
+    print(f"   POST /api/ingest       — 接收传感器数据")
+    print(f"   POST /api/ingest_image — 接收灾情图片（multipart）")
+    print(f"   GET  /api/status       — 查询接收状态（含图片通道）")
+    print(f"   GET  /api/health       — 健康检查")
     print(f"   内存队列模式，数据不持久化（如需持久化 → Redis Stream）")
     print()
 
