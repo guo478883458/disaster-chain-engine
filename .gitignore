@@ -19,3 +19,12 @@ token*
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 权重文件与运行产物
+*.pt
+output/
+temp_uploads/
+tools/data_verify*.py
+tools/eval_check.py
+tools/fix_infer.py
+tools/fix_inference.py

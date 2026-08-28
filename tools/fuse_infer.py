@@ -19,7 +19,11 @@ import argparse
 from typing import Dict, List, Tuple, Optional
 
 # ── 跨项目调用：基础设施灾损识别 ──
-INFRA_ROOT = r"H:\实习\基础设施灾损识别"
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from path_config import INFRA_PROJECT_DIR, PACKAGE_ROOT
+
+INFRA_ROOT = INFRA_PROJECT_DIR
 if INFRA_ROOT not in sys.path:
     sys.path.insert(0, INFRA_ROOT)
 
@@ -75,7 +79,7 @@ TASK_DISPATCH = {
 }
 
 
-def run_tasks(tasks: List[Tuple[str, str]]) -> Tuple[dict, dict, dict]:
+def run_tasks(tasks: List[Tuple[str, str]]) -> Tuple[list, dict, list, dict]:
     """
     逐张图像执行推理
 
@@ -153,7 +157,46 @@ def run_tasks(tasks: List[Tuple[str, str]]) -> Tuple[dict, dict, dict]:
 
         details.append(detail)
 
-    return details, evidence_kwargs, missing_evidence
+    # 提取置信度摘要
+    confidence_summary = _extract_confidence(details)
+
+    return details, evidence_kwargs, missing_evidence, confidence_summary
+
+
+def _extract_confidence(details: list) -> dict:
+    """从识别结果中提取置信度摘要"""
+    confidence = {}
+    for d in details:
+        if d.get("status") != "success":
+            continue
+        task = d["task"]
+        res = d.get("result", {})
+        if task == "water_level":
+            confidence["water_level"] = {
+                "value_cm": res.get("water_level_cm"),
+                "confidence": res.get("confidence", 0.0),
+                "source": "visual_recognition",
+            }
+        elif task in ("road", "road_bridge"):
+            dets = res.get("detections", [])
+            avg_conf = round(
+                sum(dd.get("confidence", 0.0) for dd in dets) / len(dets), 4
+            ) if dets else 0.0
+            confidence["road_damage"] = {
+                "total": res.get("total_damages", 0),
+                "avg_confidence": avg_conf,
+                "per_class": {dd["class_name"]: dd.get("confidence", 0.0)
+                              for dd in dets[:5]},
+                "source": "visual_recognition",
+            }
+        elif task in ("flood", "flood_seg"):
+            confidence["flood"] = {
+                "area_m2": res.get("积水面积_m2"),
+                "inundation_ratio": res.get("淹没占比"),
+                "disaster_level": res.get("灾情等级"),
+                "source": "visual_recognition",
+            }
+    return confidence
 
 
 # ==================== 综合推理 ====================
@@ -180,7 +223,7 @@ def fuse_infer(tasks: List[Tuple[str, str]],
         config_path = os.path.join(V2_ROOT, "configs", "config_40nodes.yaml")
 
     # 1. 逐张识别
-    details, evidence_kwargs, missing_evidence = run_tasks(tasks)
+    details, evidence_kwargs, missing_evidence, confidence_summary = run_tasks(tasks)
 
     # 2. 组装证据
     evidence = map_to_bn_states(**evidence_kwargs)
@@ -210,6 +253,7 @@ def fuse_infer(tasks: List[Tuple[str, str]],
         "识别结果明细": details,
         "证据字典": evidence,
         "证据缺失": missing_evidence,
+        "置信度摘要": confidence_summary,
         "BN推理结果": bn_result,
         "结论": conclusion,
     }

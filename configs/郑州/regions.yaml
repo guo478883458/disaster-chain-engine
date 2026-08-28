@@ -1,0 +1,113 @@
+# ============================================================================
+# 郑州地区子区域定义（基于 GeoJSON 410100_full）
+# ============================================================================
+# 郑州下辖 6 区 5 市 1 县，共 12 个区县。
+# 地理方位：西部山区（巩义/登封/新密），中部平原（荥阳/上街/中原/二七/管城/金水/惠济），东部平原（中牟/新郑）
+# 水系：黄河（北部）、伊洛河（巩义）、贾鲁河（郑州中部）、双洎河（新郑）
+# ============================================================================
+
+regions:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 中心城区（6 区）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 中原区
+    parent: 郑州市
+    attributes:
+      area_km2: 195
+      population: 96.0
+      river_system: 贾鲁河
+      geographic: 中心城区
+
+  - name: 二七区
+    parent: 郑州市
+    attributes:
+      area_km2: 159
+      population: 106.0
+      river_system: 贾鲁河
+      geographic: 中心城区
+
+  - name: 管城回族区
+    parent: 郑州市
+    attributes:
+      area_km2: 204
+      population: 82.0
+      river_system: 贾鲁河
+      geographic: 中心城区
+
+  - name: 金水区
+    parent: 郑州市
+    attributes:
+      area_km2: 242
+      population: 162.0
+      river_system: 贾鲁河
+      geographic: 中心城区
+
+  - name: 上街区
+    parent: 郑州市
+    attributes:
+      area_km2: 64
+      population: 15.0
+      river_system: 汜水河
+      geographic: 西部城区
+
+  - name: 惠济区
+    parent: 郑州市
+    attributes:
+      area_km2: 206
+      population: 56.0
+      river_system: 黄河
+      geographic: 北部城区
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 下辖县（1 县）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 中牟县
+    parent: 郑州市
+    attributes:
+      area_km2: 1393
+      population: 71.0
+      river_system: 贾鲁河
+      geographic: 东部平原
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 下辖县级市（5 市）
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: 巩义市
+    parent: 郑州市
+    attributes:
+      area_km2: 1041
+      population: 83.0
+      river_system: 伊洛河
+      geographic: 西部山区
+
+  - name: 荥阳市
+    parent: 郑州市
+    attributes:
+      area_km2: 955
+      population: 63.0
+      river_system: 汜水河
+      geographic: 西部平原
+
+  - name: 新密市
+    parent: 郑州市
+    attributes:
+      area_km2: 1001
+      population: 80.0
+      river_system: 双洎河
+      geographic: 西南山区
+
+  - name: 新郑市
+    parent: 郑州市
+    attributes:
+      area_km2: 873
+      population: 78.0
+      river_system: 双洎河
+      geographic: 南部平原
+
+  - name: 登封市
+    parent: 郑州市
+    attributes:
+      area_km2: 1220
+      population: 69.0
+      river_system: 颍河
+      geographic: 西部山区

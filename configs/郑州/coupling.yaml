@@ -1,0 +1,163 @@
+# ============================================================================
+# 郑州地区区域间耦合边定义
+# ============================================================================
+# 双通道耦合：气象通道（雨带西→东移动）+ 水文通道（河流上游→下游）
+#
+# 郑州地理特征：
+#   - 西部山区（巩义/登封/新密）→ 中部平原（荥阳/上街/中原/二七/管城/金水/惠济）→ 东部平原（中牟/新郑）
+#   - 黄河（北部边界，惠济区）
+#   - 贾鲁河（郑州主城区，中原→二七/管城/金水→中牟）
+#   - 伊洛河（巩义）
+#   - 双洎河（新密→新郑）
+# ============================================================================
+
+coupling_edges:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 气象通道（雨带移动，西→东）
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 主雨带路径：巩义/登封→荥阳/新密→上街/中原→二七/管城/金水/惠济→中牟/新郑
+  - source: 巩义市
+    target: 荥阳市
+    channel: meteorological
+    weight: 0.65
+    description: "雨带从巩义向荥阳移动（西→东主路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 登封市
+    target: 新密市
+    channel: meteorological
+    weight: 0.60
+    description: "雨带从登封向新密移动（西南→东北路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 荥阳市
+    target: 中原区
+    channel: meteorological
+    weight: 0.65
+    description: "雨带从荥阳向中原区移动（主路径）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 新密市
+    target: 二七区
+    channel: meteorological
+    weight: 0.60
+    description: "雨带从新密向二七区移动（西南→中心）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 中原区
+    target: 管城回族区
+    channel: meteorological
+    weight: 0.55
+    description: "雨带从中原向管城移动（中心向东）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 中原区
+    target: 金水区
+    channel: meteorological
+    weight: 0.55
+    description: "雨带从中原向金水移动（中心向北东）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 金水区
+    target: 中牟县
+    channel: meteorological
+    weight: 0.60
+    description: "雨带从金水向中牟移动（东向出口）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 管城回族区
+    target: 新郑市
+    channel: meteorological
+    weight: 0.55
+    description: "雨带从管城向新郑移动（南向出口）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 上街区
+    target: 荥阳市
+    channel: meteorological
+    weight: 0.50
+    description: "上街→荥阳（就近耦合）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  - source: 惠济区
+    target: 金水区
+    channel: meteorological
+    weight: 0.50
+    description: "惠济→金水（北部城区）"
+    source_node: 暴雨强度
+    target_node: 暴雨强度
+    source_state: 强
+    target_state: 强
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 水文通道（河流上游→下游）
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 贾鲁河水系：中原区→二七区/管城回族区/金水区→中牟县
+  - source: 中原区
+    target: 金水区
+    channel: hydrological
+    weight: 0.45
+    description: "贾鲁河上游（中原）→下游（金水）"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  - source: 金水区
+    target: 中牟县
+    channel: hydrological
+    weight: 0.45
+    description: "贾鲁河上游（金水）→下游（中牟）"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  # 伊洛河水系：巩义→黄河
+  - source: 巩义市
+    target: 荥阳市
+    channel: hydrological
+    weight: 0.40
+    description: "伊洛河→黄河（巩义→荥阳）"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利
+
+  # 双洎河水系：新密→新郑
+  - source: 新密市
+    target: 新郑市
+    channel: hydrological
+    weight: 0.40
+    description: "双洎河上游（新密）→下游（新郑）"
+    source_node: 内涝深度
+    target_node: 土壤-水文状态
+    source_state: 深
+    target_state: 不利

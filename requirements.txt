@@ -1,6 +1,28 @@
-# 灾害链推理引擎 v2
+# 灾害链推理演示系统 v1 - 依赖清单
+# 安装命令: pip install -r requirements.txt
+# PyTorch CPU 版: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# ── 核心推理 ──
 pgmpy>=1.0
-matplotlib
-pandas
 networkx
-pyyaml
+
+# ── 可视化 ──
+streamlit>=1.28
+plotly>=5.15
+matplotlib>=3.7
+
+# ── 数据处理 ──
+pandas>=1.5
+numpy>=1.24
+pyyaml>=6.0
+openpyxl>=3.1
+xarray>=2023.6
+netCDF4>=1.6
+
+# ── 图像识别 ──
+ultralytics>=8.0
+opencv-python>=4.8
+easyocr>=1.7
+
+# ── 文本处理 ──
+# easyocr 已包含在图像识别中
