@@ -32,6 +32,7 @@ echo 正在启动 Streamlit...
 echo 请在浏览器中打开 http://localhost:8501
 echo.
 start http://localhost:8501
+set PYTHONNOUSERSITE=1
 python -m streamlit run dashboard.py --server.maxUploadSize 100
 
 echo.
