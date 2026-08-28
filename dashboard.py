@@ -36,6 +36,8 @@ from region_engine import RegionEngine
 # ── 配置文件路径 ──
 from path_config import GEOJSON_PATH, GEOJSON_SIMPLIFIED_PATH, ERA5_EVIDENCE_PATH, ZHENGZHOU_DIR
 
+FORECAST_PATH = os.path.join(ZHENGZHOU_DIR, "era5_forecasts.json")
+
 V2_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = V2_ROOT / "configs" / "config_40nodes.yaml"
 REGIONS_BASE = V2_ROOT / "configs"
@@ -80,6 +82,15 @@ def load_era5_evidence() -> dict:
                  f"请先运行 scripts/build_era5_timeseries.py")
         return {"meta": {}, "records": []}
     with open(ERA5_EVIDENCE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@st.cache_resource(show_spinner="正在加载预测数据…")
+def load_era5_forecasts() -> dict:
+    """加载 ERA5 预测结果"""
+    if not os.path.exists(FORECAST_PATH):
+        return {"meta": {"scheme": "未生成"}, "forecasts": {}}
+    with open(FORECAST_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -141,6 +152,7 @@ def init_session_state():
         "_era5_speed": 1.0,            # 播放速度（秒/步）
         "_era5_results_history": [],   # 各小时推理结果 [{hour, results}, ...]
         "_era5_initialized": False,    # 是否已初始化过 ERA5 推理
+        "_era5_forecast_horizon": 0,   # 地图预测时段：0=当前, 1=+1h, 3=+3h
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1629,6 +1641,64 @@ def render_zz_page():
                                 period=current_hour, height=480)
         st.plotly_chart(fig, use_container_width=True)
 
+        # ── 地图时段切换（预测） ──
+        st.markdown("##### 地图时段切换（预测）")
+        fh = st.session_state["_era5_forecast_horizon"]
+        col_fh = st.columns([1, 1, 1, 3])
+        fh_labels = [("当前", 0), ("+1 小时", 1), ("+3 小时", 3)]
+        for ci, (label, val) in enumerate(fh_labels):
+            with col_fh[ci]:
+                if st.button(label, use_container_width=True,
+                             type="primary" if fh == val else "secondary",
+                             key=f"fh_{val}"):
+                    st.session_state["_era5_forecast_horizon"] = val
+                    st.rerun()
+
+        if fh > 0:
+            # 加载预测数据，用预测证据推理
+            era5_fc = load_era5_forecasts()
+            fc_rec = era5_fc.get("forecasts", {}).get(str(current_hour), {})
+            if fc_rec and str(fh) in fc_rec.get("horizons", {}):
+                fc_ev = fc_rec["horizons"][str(fh)]["evidence"]
+                fc_conf = fc_rec["horizons"][str(fh)]["confidence"]
+                # 用预测证据推理
+                fc_results = {}
+                base_ev = st.session_state.get("zz_evidence", {})
+                for d in ZHENGZHOU_DISTRICTS:
+                    district_ev = base_ev.get(d, {}).copy()
+                    for node, state in fc_ev.items():
+                        if state != "保持先验":
+                            district_ev[node] = state
+                    fc_results[d] = engine.infer(district_ev)
+
+                st.caption(f"📈 预测 {fh} 小时后（置信度：降水={fc_conf.get('降水强度',0.6):.0%}, "
+                          f"土壤含水量={fc_conf.get('前期土壤含水量',0.6):.0%}）")
+                with st.spinner("⏳ 渲染预测地图…"):
+                    fc_map_title = f"郑州 {fh} 小时后预测（{display_label}）"
+                    st.session_state["_map_cache_version"] += 1
+                    fc_fig = render_zz_map(fc_results, geojson, fc_map_title,
+                                           period=current_hour + fh * 100, height=420)
+                st.plotly_chart(fc_fig, use_container_width=True)
+
+        # ── 预测结论条 ──
+        era5_fc = load_era5_forecasts()
+        fc_rec = era5_fc.get("forecasts", {}).get(str(current_hour), {})
+        if fc_rec and "horizons" in fc_rec:
+            h1 = fc_rec["horizons"].get("1", {})
+            ev1 = h1.get("evidence", {})
+            conf1 = h1.get("confidence", {})
+            if ev1:
+                rain_pred = ev1.get("降水强度", "—")
+                water_pred = ev1.get("河道水位", "—")
+                rain_conf = conf1.get("降水强度", 0.6)
+                water_conf = conf1.get("河道水位", 0.8)
+                st.info(
+                    f"📈 **预测未来 1 小时**: 降水强度 **{rain_pred}**（置信度 {rain_conf:.0%}），"
+                    f"河道水位 **{water_pred}**（置信度 {water_conf:.0%}），"
+                    f"土壤含水量 **{ev1.get('前期土壤含水量','—')}**"
+                    f"（置信度 {conf1.get('前期土壤含水量',0.6):.0%}）"
+                )
+
         # ── 气象证据详情（折叠） ──
         with st.expander("🌤️ 当前小时气象证据详情", expanded=False):
             ev_cols = st.columns(4)
@@ -1684,30 +1754,101 @@ def render_zz_page():
                     g_probs.append(probs[high_idx] if high_idx >= 0 else 0)
             geo_high_probs.append(np.mean(g_probs) if g_probs else 0)
 
-        # 标出关键事件：内涝风险首次超过 50%
+        # 提取预测趋势数据（+1h 预测风险）
+        era5_fc = load_era5_forecasts()
+        fc_flood_probs = []
+        fc_geo_probs = []
+        if era5_fc.get("forecasts"):
+            base_ev = st.session_state.get("zz_evidence", {})
+            for h in trend_hours:
+                fc_rec = era5_fc["forecasts"].get(str(h), {})
+                h1 = fc_rec.get("horizons", {}).get("1", {})
+                fc_ev = h1.get("evidence", {})
+                if fc_ev:
+                    fc_results = {}
+                    for d in ZHENGZHOU_DISTRICTS:
+                        district_ev = base_ev.get(d, {}).copy()
+                        for node, state in fc_ev.items():
+                            if state != "保持先验":
+                                district_ev[node] = state
+                        fc_results[d] = engine.infer(district_ev)
+
+                    f_probs = []
+                    for d in urban_districts:
+                        r = fc_results.get(d, {})
+                        risk = r.get("内涝风险", {})
+                        if "probabilities" in risk:
+                            states = risk["states"]
+                            probs = risk["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            f_probs.append(probs[high_idx] if high_idx >= 0 else 0)
+                    fc_flood_probs.append(np.mean(f_probs) if f_probs else 0)
+
+                    g_probs = []
+                    for d in mountain_districts:
+                        r = fc_results.get(d, {})
+                        geo = r.get("地质灾害概率", {})
+                        if "probabilities" in geo:
+                            states = geo["states"]
+                            probs = geo["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            g_probs.append(probs[high_idx] if high_idx >= 0 else 0)
+                    fc_geo_probs.append(np.mean(g_probs) if g_probs else 0)
+                else:
+                    fc_flood_probs.append(None)
+                    fc_geo_probs.append(None)
+
+        # 标出关键事件：内涝风险首次超过 50%（实况和预测）
         key_event_hour = None
         for h in trend_hours:
             if flood_high_probs[h] >= 0.5:
                 key_event_hour = h
                 break
 
+        fc_key_event_hour = None
+        for h in trend_hours:
+            if h < len(fc_flood_probs) and fc_flood_probs[h] is not None and fc_flood_probs[h] >= 0.5:
+                fc_key_event_hour = h
+                break
+
         trend_fig = go.Figure()
+        # 实况趋势（实线）
         trend_fig.add_trace(go.Scatter(
             x=trend_hours, y=flood_high_probs,
-            mode="lines", name="城区内涝 P(高)",
+            mode="lines", name="城区内涝 P(高) 实况",
             line=dict(color="#E74C3C", width=2),
         ))
         trend_fig.add_trace(go.Scatter(
             x=trend_hours, y=geo_high_probs,
-            mode="lines", name="山区地灾 P(高)",
+            mode="lines", name="山区地灾 P(高) 实况",
             line=dict(color="#8E44AD", width=2),
         ))
+
+        # 预测趋势（虚线）
+        valid_fc = [(h, v) for h, v in zip(trend_hours, fc_flood_probs) if v is not None]
+        if valid_fc:
+            fc_x, fc_y = zip(*valid_fc)
+            trend_fig.add_trace(go.Scatter(
+                x=list(fc_x), y=list(fc_y),
+                mode="lines", name="城区内涝 P(高) +1h 预测",
+                line=dict(color="#E74C3C", width=2, dash="dash"),
+                opacity=0.6,
+            ))
+        valid_fc_geo = [(h, v) for h, v in zip(trend_hours, fc_geo_probs) if v is not None]
+        if valid_fc_geo:
+            fc_x2, fc_y2 = zip(*valid_fc_geo)
+            trend_fig.add_trace(go.Scatter(
+                x=list(fc_x2), y=list(fc_y2),
+                mode="lines", name="山区地灾 P(高) +1h 预测",
+                line=dict(color="#8E44AD", width=2, dash="dash"),
+                opacity=0.6,
+            ))
 
         # 当前时刻标记
         trend_fig.add_vline(x=current_hour, line_dash="dash",
                             line_color="gray", opacity=0.5)
 
-        # 关键事件标记
+        # 关键事件标记（实况）
         if key_event_hour is not None:
             trend_fig.add_annotation(
                 x=key_event_hour, y=0.5,
@@ -1715,6 +1856,16 @@ def render_zz_page():
                 showarrow=True, arrowhead=1,
                 ax=0, ay=-40,
                 font=dict(size=11, color="red"),
+                bgcolor="rgba(255,255,255,0.8)",
+            )
+        # 预测关键事件标记
+        if fc_key_event_hour is not None and fc_key_event_hour != key_event_hour:
+            trend_fig.add_annotation(
+                x=fc_key_event_hour, y=0.5,
+                text=f"预测>50%<br>(hour {fc_key_event_hour})",
+                showarrow=True, arrowhead=1,
+                ax=0, ay=40,
+                font=dict(size=10, color="darkorange"),
                 bgcolor="rgba(255,255,255,0.8)",
             )
 
