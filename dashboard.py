@@ -34,7 +34,7 @@ from bn_engine import DisasterChainEngine
 from region_engine import RegionEngine
 
 # ── 配置文件路径 ──
-from path_config import GEOJSON_PATH, GEOJSON_SIMPLIFIED_PATH, ERA5_EVIDENCE_PATH, ZHENGZHOU_DIR
+from path_config import GEOJSON_PATH, GEOJSON_SIMPLIFIED_PATH, ERA5_EVIDENCE_PATH, ERA5_RESULTS_CACHE_PATH, ZHENGZHOU_DIR
 
 FORECAST_PATH = os.path.join(ZHENGZHOU_DIR, "era5_forecasts.json")
 
@@ -92,6 +92,82 @@ def load_era5_forecasts() -> dict:
         return {"meta": {"scheme": "未生成"}, "forecasts": {}}
     with open(FORECAST_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# ============================================================================
+# ERA5 预计算结果磁盘缓存
+# ============================================================================
+
+def _get_demo_params_hash() -> str:
+    """计算 demo_params.json 的内容 hash，用于缓存失效检测"""
+    import hashlib
+    demo_path = os.path.join(os.path.dirname(__file__),
+                             "configs", "郑州", "demo_params.json")
+    if not os.path.exists(demo_path):
+        return ""
+    with open(demo_path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def _get_era5_evidence_hash() -> str:
+    """计算 era5_hourly_evidence.json 的内容 hash，用于缓存失效检测"""
+    import hashlib
+    if not os.path.exists(ERA5_EVIDENCE_PATH):
+        return ""
+    with open(ERA5_EVIDENCE_PATH, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
+
+
+def load_era5_results_cache() -> dict:
+    """从磁盘加载 ERA5 预计算结果缓存，含失效检测
+
+    缓存命中条件（全部满足）：
+      1. 缓存文件存在
+      2. meta.demo_params_hash 与当前 demo_params.json 一致
+      3. meta.evidence_hash 与当前 era5_hourly_evidence.json 一致
+
+    返回: {"valid": True, "results": [...]} 或 {"valid": False, "results": []}
+    """
+    result = {"valid": False, "results": []}
+    if not os.path.exists(ERA5_RESULTS_CACHE_PATH):
+        return result
+
+    try:
+        with open(ERA5_RESULTS_CACHE_PATH, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+
+        # 校验 hash
+        demo_hash = _get_demo_params_hash()
+        ev_hash = _get_era5_evidence_hash()
+        meta = cache.get("meta", {})
+
+        if meta.get("demo_params_hash") == demo_hash and meta.get("evidence_hash") == ev_hash:
+            result["valid"] = True
+            result["results"] = cache.get("results", [])
+        return result
+    except Exception:
+        return result
+
+
+def save_era5_results_cache(results: list):
+    """将 ERA5 预计算结果写入磁盘缓存"""
+    import hashlib
+    demo_hash = _get_demo_params_hash()
+    ev_hash = _get_era5_evidence_hash()
+
+    cache = {
+        "meta": {
+            "demo_params_hash": demo_hash,
+            "evidence_hash": ev_hash,
+            "total_hours": len(results),
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        "results": results,
+    }
+
+    os.makedirs(os.path.dirname(ERA5_RESULTS_CACHE_PATH), exist_ok=True)
+    with open(ERA5_RESULTS_CACHE_PATH, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
 # ── 模型权重懒加载（首屏不加载，仅在上传图片时加载） ──
@@ -1530,29 +1606,42 @@ def render_zz_page():
             st.warning("ERA5 证据数据为空，请先运行 scripts/build_era5_timeseries.py")
             return
 
-        # ── 初始化 ERA5 推理结果（首次进入时全量预计算） ──
+        # ── 初始化 ERA5 推理结果（磁盘缓存加速） ──
         if not st.session_state["_era5_initialized"]:
-            with st.status("正在预计算 144 小时推理结果…", expanded=False) as status:
-                all_results = []
-                base_ev = st.session_state.get("zz_evidence", {})
-                for i, rec in enumerate(records):
-                    # 合并 ERA5 气象证据到各区基础证据
-                    hour_results = {}
-                    for d in ZHENGZHOU_DISTRICTS:
-                        district_ev = base_ev.get(d, {}).copy()
-                        # 用 ERA5 气象证据覆盖（气象节点所有区一致）
-                        for node, state in rec["evidence"].items():
-                            if state != "保持先验":
-                                district_ev[node] = state
-                        hour_results[d] = engine.infer(district_ev)
-
-                    if i % 24 == 0:
-                        status.update(label=f"已计算 {i}/144 小时…")
-                    all_results.append({"hour": i, "results": hour_results})
-
+            # 先尝试从磁盘缓存加载
+            cache_result = load_era5_results_cache()
+            if cache_result["valid"]:
+                all_results = cache_result["results"]
                 st.session_state["_era5_results_history"] = all_results
                 st.session_state["_era5_initialized"] = True
-                status.update(label="✅ 144 小时推理预计算完成", state="complete")
+                st.toast("✅ 预计算结果缓存命中，秒开加载", icon="⚡")
+            else:
+                with st.status("⏳ 首次预计算 144 小时推理（约 3 分钟），完成后将缓存加速",
+                               expanded=True) as status:
+                    all_results = []
+                    base_ev = st.session_state.get("zz_evidence", {})
+                    total = len(records)
+                    for i, rec in enumerate(records):
+                        # 合并 ERA5 气象证据到各区基础证据
+                        hour_results = {}
+                        for d in ZHENGZHOU_DISTRICTS:
+                            district_ev = base_ev.get(d, {}).copy()
+                            # 用 ERA5 气象证据覆盖（气象节点所有区一致）
+                            for node, state in rec["evidence"].items():
+                                if state != "保持先验":
+                                    district_ev[node] = state
+                            hour_results[d] = engine.infer(district_ev)
+
+                        pct = int((i + 1) / total * 100)
+                        status.update(label=f"⏳ 预计算中 {i+1}/{total} 小时 ({pct}%)…")
+                        all_results.append({"hour": i, "results": hour_results})
+
+                    # 写磁盘缓存
+                    save_era5_results_cache(all_results)
+                    st.session_state["_era5_results_history"] = all_results
+                    st.session_state["_era5_initialized"] = True
+                    status.update(label="✅ 144 小时推理预计算完成（已缓存，下次秒开）",
+                                  state="complete")
 
         # ── 时间轴控制 ──
         col_controls = st.columns([2, 1, 1, 1, 1])
