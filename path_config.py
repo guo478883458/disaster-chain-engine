@@ -58,6 +58,7 @@ ROAD_BRIDGE_PT = os.path.join(INFRA_ROAD_BRIDGE_DIR, "rdd2020_yolov8n.pt")
 # ==================== 地理数据 ====================
 GEOJSON_PATH = os.path.join(DATA_ROOT, "zhengzhou_720", "zhengzhou_geojson.json")
 GEOJSON_SIMPLIFIED_PATH = os.path.join(DATA_ROOT, "zhengzhou_720", "zhengzhou_geojson_simplified.json")
+ERA5_EVIDENCE_PATH = os.path.join(DATA_ROOT, "zhengzhou_720", "era5_hourly_evidence.json")
 ZHENGZHOU_DIR = os.path.join(DATA_ROOT, "zhengzhou_720")
 
 # ==================== 基础设施数据目录 ====================
