@@ -33,7 +33,7 @@ from bn_engine import DisasterChainEngine
 from region_engine import RegionEngine
 
 # ── 配置文件路径 ──
-from path_config import GEOJSON_PATH, ZHENGZHOU_DIR
+from path_config import GEOJSON_PATH, GEOJSON_SIMPLIFIED_PATH, ZHENGZHOU_DIR
 
 V2_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = V2_ROOT / "configs" / "config_40nodes.yaml"
@@ -62,11 +62,12 @@ def load_engine(config_path):
 
 @st.cache_resource(show_spinner="正在加载 GeoJSON 地图数据…")
 def load_geojson():
-    """缓存 GeoJSON 数据"""
-    if not os.path.exists(GEOJSON_PATH):
-        st.error(f"GeoJSON 文件不存在: {GEOJSON_PATH}")
+    """缓存 GeoJSON 数据（优先加载简化版，回退到原始版）"""
+    path = GEOJSON_SIMPLIFIED_PATH if os.path.exists(GEOJSON_SIMPLIFIED_PATH) else GEOJSON_PATH
+    if not os.path.exists(path):
+        st.error(f"GeoJSON 文件不存在: {path}")
         return None
-    with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -117,6 +118,10 @@ def init_session_state():
 
         # 引擎状态
         "_engine_loaded": False,
+
+        # 地图缓存（避免相同结果下重建 fig）
+        "_map_fig_cache": {},          # {cache_key: go.Figure}
+        "_map_cache_version": 0,       # 每次推理结果变化时递增
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -413,19 +418,46 @@ def _get_district_center(district: str) -> Tuple[float, float]:
     return centers.get(district, (34.75, 113.65))
 
 
+def _hex_to_rgba(hex_color: str, opacity: float) -> str:
+    """将十六进制颜色转为 rgba 字符串（编码透明度到颜色中）"""
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    return f"rgba({r},{g},{b},{opacity:.3f})"
+
+
 def render_zz_map(zz_results: dict, geojson: dict, title: str = "郑州各区内涝风险态势",
                   period: int = 0, height: int = 680) -> go.Figure:
-    """绘制郑州 Choropleth 地图（增强版：置信度文字标注 + 透明度通道）"""
-    districts_info = []
-    for d in ZHENGZHOU_DISTRICTS:
+    """
+    绘制郑州 Choropleth 地图（单 trace 优化版 + MapLibre 后端）
+    ---------------------------------------------------------
+    优化点:
+      1. 单 trace 渲染（12 区合并为 1 次 add_trace）
+      2. 各区独立透明度编码到 RGBA 颜色中
+      3. MapLibre 后端（layout.map）替代 Mapbox
+      4. 使用简化版 GeoJSON（顶点数减少 80%+）
+    """
+    # ── 缓存检查：相同版本号和时段下复用已构建的 fig ──
+    cache_key = f"map_v{st.session_state.get('_map_cache_version', 0)}_p{period}"
+    cached = st.session_state.get("_map_fig_cache", {}).get(cache_key)
+    if cached is not None:
+        # 只需更新标题（时段可能变化）
+        cached.update_layout(title=dict(
+            text=f"{title}（时段 {period}）",
+            font=dict(size=16, family="Microsoft YaHei"),
+        ))
+        return cached
+    n = len(ZHENGZHOU_DISTRICTS)
+    z_values = []
+    locations = []
+    hover_texts = []
+    colorscale = []
+
+    for i, d in enumerate(ZHENGZHOU_DISTRICTS):
         top_state, top_prob, dist = get_district_risk(zz_results, d)
         geo_state, geo_prob = get_district_geo_risk(zz_results, d)
-
-        # 证据覆盖度
         evidence = st.session_state["zz_evidence"].get(d, {})
         n_evidence = len(evidence)
-
-        # 灾害结论
         bn_result = zz_results.get(d, {})
         confidence = st.session_state["zz_confidence"].get(d, {})
         conclusion = get_disaster_conclusion(bn_result, confidence, n_evidence)
@@ -433,93 +465,67 @@ def render_zz_map(zz_results: dict, geojson: dict, title: str = "郑州各区内
         color_map = {"低": "#2ECC71", "中": "#F1C40F", "高": "#E74C3C"}
         fill_color = color_map.get(top_state, "#95A5A6")
 
-        # 透明度与置信度挂钩（置信度越高越实）
+        # 透明度与置信度挂钩（置信度越高越实），编码到 RGBA 颜色中
         opacity = max(0.3, min(1.0, top_prob * 1.2))
+        rgba = _hex_to_rgba(fill_color, opacity)
 
-        districts_info.append({
-            "district": d,
-            "top_state": top_state,
-            "confidence": top_prob,
-            "geo_state": geo_state,
-            "geo_prob": geo_prob,
-            "evidence_count": n_evidence,
-            "color": fill_color,
-            "opacity": opacity,
-            "conclusion": conclusion,
-            "hover_text": (
-                f"<b>{d}</b><br>"
-                f"<b>主要威胁: {conclusion['main_threat']}</b><br>"
-                f"<span style='color:{conclusion['level_color']}'><b>等级: {conclusion['level']}</b></span><br>"
-                f"内涝风险: <b>{top_state}</b> ({top_prob*100:.1f}%)<br>"
-                f"内涝分布: {', '.join(f'{k}={v*100:.0f}%' for k, v in dist.items())}<br>"
-                f"地灾概率: {geo_state} ({geo_prob*100:.1f}%)<br>"
-                f"证据覆盖: {n_evidence}/40 节点<br>"
-                f"<i>{conclusion['suggestion']}</i>"
-            ),
-        })
+        locations.append(d)
+        z_values.append(i)
+        hover_texts.append(
+            f"<b>{d}</b><br>"
+            f"<b>主要威胁: {conclusion['main_threat']}</b><br>"
+            f"<span style='color:{conclusion['level_color']}'><b>等级: {conclusion['level']}</b></span><br>"
+            f"内涝风险: <b>{top_state}</b> ({top_prob*100:.1f}%)<br>"
+            f"内涝分布: {', '.join(f'{k}={v*100:.0f}%' for k, v in dist.items())}<br>"
+            f"地灾概率: {geo_state} ({geo_prob*100:.1f}%)<br>"
+            f"证据覆盖: {n_evidence}/40 节点<br>"
+            f"<i>{conclusion['suggestion']}</i>"
+        )
 
-    # 构建 Plotly 地图
+        # Colorscale 每个区一个独立色标（位置 = i/(n-1)）
+        pos = i / (n - 1) if n > 1 else 0
+        colorscale.append([pos, rgba])
+
+    # ── 单 trace 色块层 ──
     fig = go.Figure()
-
-    # ── 色块层（Choropleth） ──
-    # 为每个区单独添加 trace 以实现独立 opacity
-    for d_info in districts_info:
-        # 创建单区 GeoJSON（只包含当前区）
-        single_feature = {
-            "type": "FeatureCollection",
-            "features": [
-                f for f in geojson.get("features", [])
-                if f.get("properties", {}).get("name") == d_info["district"]
-            ]
-        }
-
-        # 用 z 值编码颜色（0=绿, 50=黄, 100=红）
-        z_val = 0 if d_info["top_state"] == "低" else (50 if d_info["top_state"] == "中" else 100)
-
-        fig.add_trace(go.Choroplethmapbox(
-            geojson=single_feature,
-            locations=[d_info["district"]],
-            z=[z_val],
-            featureidkey="properties.name",
-            colorscale=[
-                [0, "#2ECC71"],
-                [0.5, "#F1C40F"],
-                [1.0, "#E74C3C"],
-            ],
-            zmin=0,
-            zmax=100,
-            marker=dict(line=dict(width=1, color="white")),
-            marker_opacity=d_info["opacity"],
-            showscale=False,
-            hovertext=[d_info["hover_text"]],
-            hoverinfo="text",
-            name=d_info["district"],
-            visible=True,
-        ))
+    fig.add_trace(go.Choroplethmap(
+        geojson=geojson,
+        locations=locations,
+        z=z_values,
+        featureidkey="properties.name",
+        colorscale=colorscale,
+        zmin=0,
+        zmax=n - 1,
+        marker=dict(line=dict(width=1, color="white")),
+        marker_opacity=1.0,  # 透明度已编码到 RGBA 颜色中
+        showscale=False,
+        hovertext=hover_texts,
+        hoverinfo="text",
+        name="",
+    ))
 
     # ── 文字标注层（风险态 + 置信度%） ──
     annotations = []
-    for d_info in districts_info:
-        lat, lon = _get_district_center(d_info["district"])
-        annotations.append(
-            dict(
-                x=lon,
-                y=lat,
-                text=f"<b>{d_info['top_state']}</b><br>{d_info['confidence']*100:.0f}%",
-                showarrow=False,
-                font=dict(
-            size=12,
-            color="black" if d_info["top_state"] != "高" else "white",
-            family="Microsoft YaHei",
-        ),
-                bgcolor="rgba(255,255,255,0.8)" if d_info["top_state"] != "高" else "rgba(231,76,60,0.8)",
-                bordercolor=("#2ECC71" if d_info["top_state"] == "低"
-                             else "#F1C40F" if d_info["top_state"] == "中"
-                             else "#E74C3C"),
-                borderwidth=1,
-                borderpad=2,
-            )
-        )
+    for d in ZHENGZHOU_DISTRICTS:
+        top_state, top_prob, _ = get_district_risk(zz_results, d)
+        lat, lon = _get_district_center(d)
+        annotations.append(dict(
+            x=lon,
+            y=lat,
+            text=f"<b>{top_state}</b><br>{top_prob * 100:.0f}%",
+            showarrow=False,
+            font=dict(
+                size=12,
+                color="black" if top_state != "高" else "white",
+                family="Microsoft YaHei",
+            ),
+            bgcolor="rgba(255,255,255,0.8)" if top_state != "高" else "rgba(231,76,60,0.8)",
+            bordercolor=("#2ECC71" if top_state == "低"
+                         else "#F1C40F" if top_state == "中"
+                         else "#E74C3C"),
+            borderwidth=1,
+            borderpad=2,
+        ))
 
     fig.update_layout(
         title=dict(
@@ -527,7 +533,7 @@ def render_zz_map(zz_results: dict, geojson: dict, title: str = "郑州各区内
             font=dict(size=16, family="Microsoft YaHei"),
         ),
         font=dict(family="Microsoft YaHei"),
-        mapbox=dict(
+        map=dict(
             style="carto-positron",
             center=dict(lat=34.75, lon=113.65),
             zoom=9.2,
@@ -542,6 +548,12 @@ def render_zz_map(zz_results: dict, geojson: dict, title: str = "郑州各区内
         ),
         annotations=annotations,
     )
+
+    # ── 存入缓存 ──
+    if "_map_fig_cache" not in st.session_state:
+        st.session_state["_map_fig_cache"] = {}
+    st.session_state["_map_fig_cache"][cache_key] = fig
+
     return fig
 
 
@@ -652,6 +664,7 @@ def _run_infer_all_demo(engine: DisasterChainEngine):
 
     progress_bar.empty()
     st.success(f"✅ 演示参数推演完成（{n} 个区，含图片识别）")
+    st.session_state["_map_cache_version"] += 1
 
 
 def _run_infer_all_prior(engine: DisasterChainEngine):
@@ -669,6 +682,7 @@ def _run_infer_all_prior(engine: DisasterChainEngine):
         )
     progress_bar.empty()
     st.success(f"✅ 先验数据推演完成（{n} 个区，纯 BN 推理，无图片识别）")
+    st.session_state["_map_cache_version"] += 1
 
 
 def _run_infer_all_manual(engine: DisasterChainEngine):
@@ -692,6 +706,7 @@ def _run_infer_all_manual(engine: DisasterChainEngine):
         )
     progress_bar.empty()
     st.success(f"✅ 手动参数推演完成（{n} 个区）")
+    st.session_state["_map_cache_version"] += 1
 
 
 # ============================================================================
@@ -1372,6 +1387,7 @@ def render_zz_page():
                     st.session_state["zz_evidence"] = new_evidence
                     st.session_state["zz_results"] = new_results
                     st.session_state["zz_time_period"] += 1
+                    st.session_state["_map_cache_version"] += 1
                     st.success(f"✅ 已递推到时段 {st.session_state['zz_time_period']}")
                     st.rerun()
 
@@ -1388,6 +1404,7 @@ def render_zz_page():
                 st.session_state["zz_time_period"] = 0
                 st.session_state["zz_chain_results_history"] = []
                 st.session_state["zz_chain_evidence_history"] = []
+                st.session_state["_map_cache_version"] += 1
                 st.rerun()
 
         with col2:
@@ -1649,6 +1666,7 @@ def main():
                 st.session_state["zz_results"] = {}
                 st.session_state["zz_confidence"] = {}
                 st.session_state["_demo_params_loaded"] = False
+                st.session_state["_map_cache_version"] += 1
                 st.rerun()
 
     # ── 主页面 ──
