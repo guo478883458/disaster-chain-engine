@@ -1610,21 +1610,16 @@ def render_zz_page():
 
     def _render_stream_mode(engine, geojson):
         """数据流模式：轮询 ingest_server 接收实时数据，自动更新（含图片通道）
-        优化：st.fragment 局部刷新 + 单区推理 + 地图降频
+        优化：两个独立 fragment——
+          Fragment A（指标卡 / run_every=2）：轮询 + 指标卡 + 推理 + 图片识别
+          Fragment B（地图+趋势 / run_every=5）：地图 + 趋势图 + 区详情
         """
-        @st.fragment(run_every=3)
-        def _stream_fragment():
-            import time
+        # ═══════════════════════════════════════════════════════════
+        # Fragment A：指标卡（轻量高频）
+        # ═══════════════════════════════════════════════════════════
+        @st.fragment(run_every=2)
+        def _stream_metrics_fragment():
             import threading
-            # ── 本地辅助 ──
-            def _maybe_bump_map():
-                now = time.time()
-                last = st.session_state.get("_map_last_rebuild_time", 0.0)
-                if now - last >= 5.0:
-                    st.session_state["_map_cache_version"] = st.session_state.get("_map_cache_version", 0) + 1
-                    st.session_state["_map_last_rebuild_time"] = now
-
-            # ── 合并轮询：单次 /api/status 拿全部状态（timeout 1 秒） ──
             import requests as _req
             status_data = {"received_count": 0, "last_data": None, "last_received_time": None,
                            "image_received_count": 0, "last_image": None, "last_image_time": None}
@@ -1687,8 +1682,7 @@ def render_zz_page():
                 else:
                     st.metric("接收时间", "—")
 
-            # ── 检测 JSON 新数据（单区推理，不复用全量） ──
-            need_rerun = False
+            # ── 检测 JSON 新数据（单区推理，~0.1s） ──
             if count > st.session_state["_era5_stream_last_count"]:
                 st.session_state["_era5_stream_last_count"] = count
                 if last_data and last_data.get("station"):
@@ -1708,8 +1702,7 @@ def render_zz_page():
                         prev_results[district] = engine.infer(current_ev)
                         st.session_state["zz_results"] = prev_results
 
-                        _maybe_bump_map()
-
+                        # 记录历史
                         history = st.session_state["_era5_stream_received_data"]
                         history.append(last_data)
                         if len(history) > 200:
@@ -1721,7 +1714,6 @@ def render_zz_page():
                         if len(res_history) > 200:
                             res_history = res_history[-200:]
                         st.session_state["_era5_stream_results_history"] = res_history
-                        need_rerun = True
 
             # ── 检测图片新数据 → 启动后台线程，页面不阻塞 ──
             if image_count > st.session_state["_stream_image_last_count"] and not st.session_state.get("_stream_image_processing", False):
@@ -1737,7 +1729,6 @@ def render_zz_page():
                     if district not in ZHENGZHOU_DISTRICTS:
                         district = img_station
 
-                    # 后台线程执行识别，不阻塞页面
                     def _bg_recognize(path, stn, task, fname, dist):
                         try:
                             from tools.fuse_infer import TASK_DISPATCH
@@ -1770,7 +1761,6 @@ def render_zz_page():
                                             current_ev[node] = state
                                     st.session_state["zz_evidence"][dist] = current_ev
 
-                                    # 单区推理
                                     prev_results = st.session_state.get("zz_results", {}).copy()
                                     prev_results[dist] = engine.infer(current_ev)
                                     st.session_state["zz_results"] = prev_results
@@ -1799,11 +1789,6 @@ def render_zz_page():
             if st.session_state.get("_stream_image_processing", False):
                 st.info("⏳ 图片识别中…（完成后自动更新）")
 
-            # 不手动 rerun：fragment 有 run_every=3 自动刷新，
-            # 图片识别（后台线程）完成后数据在下次自动刷新时展示；
-            # 注意：scope="fragment" 只能在 fragment 自动刷新期间调用，
-            # 主脚本 rerun 时调用会抛 StreamlitAPIException，故不调用
-
             # ── 显示图片识别结果摘要 ──
             img_records = st.session_state.get("_stream_image_records", [])
             if img_records:
@@ -1812,8 +1797,27 @@ def render_zz_page():
                             f"{last_img_record.get('task_type', '?')} — "
                             f"{last_img_record.get('summary', '完成')}")
 
-            # ── 地图 ──
+        # ═══════════════════════════════════════════════════════════
+        # Fragment B：地图 + 趋势图（重量低频）
+        # ═══════════════════════════════════════════════════════════
+        @st.fragment(run_every=5)
+        def _stream_map_fragment():
+            import time
+
+            # 地图重建限频（每 5 秒最多 bump 一次）
+            def _maybe_bump_map():
+                now = time.time()
+                last = st.session_state.get("_map_last_rebuild_time", 0.0)
+                if now - last >= 5.0:
+                    st.session_state["_map_cache_version"] = st.session_state.get("_map_cache_version", 0) + 1
+                    st.session_state["_map_last_rebuild_time"] = now
+
+            _maybe_bump_map()
+
             current_results = st.session_state.get("zz_results", {})
+
+            # ── 地图 ──
+            st.caption("🗺️ 地图每 5 秒自动更新")
             if current_results:
                 fig = render_zz_map(current_results, geojson,
                                     "郑州实时监测（数据流模式）",
@@ -1821,7 +1825,7 @@ def render_zz_page():
                                     height=480)
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("⏳ 等待数据到达… 请启动 ingest_server 和 simulate_data_stream")
+                st.info("⏳ 等待数据到达… 地图将自动更新")
 
             # ── 趋势图（降频：数据条数增加≥3 才重建） ──
             history = st.session_state["_era5_stream_received_data"]
@@ -1887,11 +1891,11 @@ def render_zz_page():
                 else:
                     st.info("⏳ 趋势数据加载中…")
             elif history and res_history:
-                # 数据不足 3 条时不重建，显示简短提示
                 st.caption(f"趋势图已更新（共 {len(history)} 条数据，每增 3 条刷新）")
             else:
                 st.info("⏳ 趋势数据加载中…")
 
+            # ── 各区风险详情 ──
             if current_results:
                 with st.expander("📋 当前各区风险详情", expanded=False):
                     rows = []
@@ -1914,7 +1918,9 @@ def render_zz_page():
                         rows.append({"区县": d, "内涝风险 P(高)": flood_p, "地灾概率 P(高)": geo_p})
                     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-        _stream_fragment()
+        # ── 调用两个 fragment ──
+        _stream_metrics_fragment()
+        _stream_map_fragment()
 
     # ═══════════════════════════════════════════════════════════════
     # Tab 1: 地图总览
