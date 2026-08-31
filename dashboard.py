@@ -1797,6 +1797,38 @@ def render_zz_page():
                             f"{last_img_record.get('task_type', '?')} — "
                             f"{last_img_record.get('summary', '完成')}")
 
+            # ── 最近接收数据 expander（JSON 明细） ──
+            history = st.session_state.get("_era5_stream_received_data", [])
+            with st.expander(f"📋 最近接收数据（已接收 {len(history)} 条，显示最近 10 条）", expanded=False):
+                if history:
+                    recent = history[-10:]
+                    rows = []
+                    core_fields = ["timestamp", "station", "降水强度", "风力", "气温",
+                                   "前期土壤含水量", "河道水位"]
+                    for item in recent:
+                        row = {}
+                        for f in core_fields:
+                            row[f] = item.get(f, "—")
+                        rows.append(row)
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("暂无数据")
+
+            # ── 最近图片识别 expander（图片明细） ──
+            with st.expander("📷 最近图片识别（显示最近 5 条）", expanded=False):
+                if img_records:
+                    recent_img = img_records[-5:]
+                    img_rows = []
+                    for rec in recent_img:
+                        img_rows.append({
+                            "站点": rec.get("station", "?"),
+                            "任务类型": rec.get("task_type", "?"),
+                            "识别结果": rec.get("summary", "完成"),
+                        })
+                    st.table(pd.DataFrame(img_rows))
+                else:
+                    st.info("暂无图片识别记录")
+
         # ═══════════════════════════════════════════════════════════
         # Fragment B：地图 + 趋势图（重量低频）
         # ═══════════════════════════════════════════════════════════
