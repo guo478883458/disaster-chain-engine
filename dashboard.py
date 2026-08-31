@@ -1799,9 +1799,10 @@ def render_zz_page():
             if st.session_state.get("_stream_image_processing", False):
                 st.info("⏳ 图片识别中…（完成后自动更新）")
 
-            # fragment 内 rerun 使用 scope="fragment"（仅刷新 fragment，不重跑全 app）
-            if need_rerun:
-                st.rerun(scope="fragment")
+            # 不手动 rerun：fragment 有 run_every=3 自动刷新，
+            # 图片识别（后台线程）完成后数据在下次自动刷新时展示；
+            # 注意：scope="fragment" 只能在 fragment 自动刷新期间调用，
+            # 主脚本 rerun 时调用会抛 StreamlitAPIException，故不调用
 
             # ── 显示图片识别结果摘要 ──
             img_records = st.session_state.get("_stream_image_records", [])
