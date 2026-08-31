@@ -27,6 +27,7 @@ import plotly.express as px
 import numpy as np
 import pandas as pd
 import time
+from datetime import datetime
 
 # ── 确保能找到 v2 模块 ──
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -269,6 +270,8 @@ def init_session_state():
         "_stream_image_last_count": 0,  # 上次轮询时的图片已接收条数
         "_stream_image_records": [],    # 已处理的图片记录 [{station, task_type, save_path, ...}]
         "_stream_image_processing": False,  # 是否正在处理图片识别
+        # 数据流模式 - 趋势图降频
+        "_stream_trend_last_len": 0,    # 上次趋势图绘制时的 history 长度
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1607,20 +1610,31 @@ def render_zz_page():
         """数据流模式：轮询 ingest_server 接收实时数据，自动更新（含图片通道）
         优化：st.fragment 局部刷新 + 单区推理 + 地图降频
         """
-        @st.fragment(run_every=2)
+        @st.fragment(run_every=3)
         def _stream_fragment():
-            # 本地辅助：地图重建限频（每 5 秒最多 bump 一次）
+            import time
+            import threading
+            # ── 本地辅助 ──
             def _maybe_bump_map():
-                import time
                 now = time.time()
                 last = st.session_state.get("_map_last_rebuild_time", 0.0)
                 if now - last >= 5.0:
                     st.session_state["_map_cache_version"] = st.session_state.get("_map_cache_version", 0) + 1
                     st.session_state["_map_last_rebuild_time"] = now
 
-            # 轮询 ingest_server
-            count, last_data, last_time = fetch_ingest_data()
-            status_data = poll_ingest_server()
+            # ── 合并轮询：单次 /api/status 拿全部状态（timeout 1 秒） ──
+            import requests as _req
+            status_data = {"received_count": 0, "last_data": None, "last_received_time": None,
+                           "image_received_count": 0, "last_image": None, "last_image_time": None}
+            try:
+                resp = _req.get(f"{INGEST_SERVER_URL}/api/status", timeout=1)
+                if resp.status_code == 200:
+                    status_data = resp.json()
+            except Exception:
+                pass
+            count = status_data.get("received_count", 0)
+            last_data = status_data.get("last_data")
+            last_time = status_data.get("last_received_time")
             image_count = status_data.get("image_received_count", 0)
             last_image = status_data.get("last_image")
 
@@ -1639,7 +1653,6 @@ def render_zz_page():
             with col_stream[2]:
                 if last_time:
                     try:
-                        from datetime import datetime
                         last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S.%f")
                         ago = (datetime.now() - last_dt).total_seconds()
                         st.metric("接收时间", f"{ago:.0f} 秒前")
@@ -1664,7 +1677,6 @@ def render_zz_page():
                 img_time = status_data.get("last_image_time")
                 if img_time:
                     try:
-                        from datetime import datetime
                         img_dt = datetime.strptime(img_time, "%Y-%m-%d %H:%M:%S.%f")
                         ago = (datetime.now() - img_dt).total_seconds()
                         st.metric("接收时间", f"{ago:.0f} 秒前")
@@ -1674,7 +1686,7 @@ def render_zz_page():
                     st.metric("接收时间", "—")
 
             # ── 检测 JSON 新数据（单区推理，不复用全量） ──
-            json_updated = False
+            need_rerun = False
             if count > st.session_state["_era5_stream_last_count"]:
                 st.session_state["_era5_stream_last_count"] = count
                 if last_data and last_data.get("station"):
@@ -1689,15 +1701,13 @@ def render_zz_page():
                                 current_ev[node] = state
                         st.session_state["zz_evidence"][district] = current_ev
 
-                        # 核心优化：只推理受影响区，其余复用上一轮结果
+                        # 单区推理（~0.1s），其余复用
                         prev_results = st.session_state.get("zz_results", {}).copy()
                         prev_results[district] = engine.infer(current_ev)
                         st.session_state["zz_results"] = prev_results
 
-                        # 地图限频重建
                         _maybe_bump_map()
 
-                        # 记录历史
                         history = st.session_state["_era5_stream_received_data"]
                         history.append(last_data)
                         if len(history) > 200:
@@ -1709,9 +1719,9 @@ def render_zz_page():
                         if len(res_history) > 200:
                             res_history = res_history[-200:]
                         st.session_state["_era5_stream_results_history"] = res_history
-                        json_updated = True
+                        need_rerun = True
 
-            # ── 检测图片新数据（后台线程，不阻塞） ──
+            # ── 检测图片新数据 → 启动后台线程，页面不阻塞 ──
             if image_count > st.session_state["_stream_image_last_count"] and not st.session_state.get("_stream_image_processing", False):
                 st.session_state["_stream_image_last_count"] = image_count
                 st.session_state["_stream_image_processing"] = True
@@ -1721,91 +1731,75 @@ def render_zz_page():
                     img_station = last_image.get("station", "")
                     img_task = last_image.get("task_type", "")
                     img_file = last_image.get("original_filename", "")
-
                     district = img_station.replace("郑州-", "").strip()
                     if district not in ZHENGZHOU_DISTRICTS:
                         district = img_station
 
-                    task_labels = {"water_level": "水位尺", "road": "道路损毁", "flood": "洪水"}
-                    task_label = task_labels.get(img_task, img_task)
-
-                    st.markdown(f"⏳ 正在识别图片（{task_label}）…")
-
-                    if os.path.exists(img_path):
+                    # 后台线程执行识别，不阻塞页面
+                    def _bg_recognize(path, stn, task, fname, dist):
                         try:
                             from tools.fuse_infer import TASK_DISPATCH
                             from tools.preprocess_api import map_to_bn_states
-
-                            handler = TASK_DISPATCH.get(img_task)
-                            if handler and district in ZHENGZHOU_DISTRICTS:
-                                result = handler(img_path)
+                            handler = TASK_DISPATCH.get(task)
+                            if handler and dist in ZHENGZHOU_DISTRICTS:
+                                result = handler(path)
                                 if "error" not in result:
                                     evidence_kwargs = {}
                                     summary_parts = []
-                                    if img_task == "water_level":
+                                    if task == "water_level":
                                         wl = result.get("water_level_cm")
                                         if wl is not None:
                                             evidence_kwargs["water_level_cm"] = wl
                                             summary_parts.append(f"水位：{wl}cm")
-                                    elif img_task == "road":
+                                    elif task == "road":
                                         total = result.get("total_damages", 0)
                                         evidence_kwargs["road_damage_counts"] = total
                                         summary_parts.append(f"损毁：{total}处")
-                                    elif img_task == "flood":
+                                    elif task == "flood":
                                         area = result.get("积水面积_m2")
                                         if area is not None:
                                             evidence_kwargs["flood_area_m2"] = area
                                             summary_parts.append(f"积水面积：{area:.0f}m²")
 
                                     bn_evidence = map_to_bn_states(**evidence_kwargs)
-
-                                    # 合并到该区证据
-                                    current_ev = st.session_state.get("zz_evidence", {}).get(district, {}).copy()
+                                    current_ev = st.session_state.get("zz_evidence", {}).get(dist, {}).copy()
                                     for node, state in bn_evidence.items():
                                         if state != "保持先验":
                                             current_ev[node] = state
-                                    st.session_state["zz_evidence"][district] = current_ev
+                                    st.session_state["zz_evidence"][dist] = current_ev
 
-                                    # 核心优化：只推理受影响区，其余复用上一轮结果
+                                    # 单区推理
                                     prev_results = st.session_state.get("zz_results", {}).copy()
-                                    prev_results[district] = engine.infer(current_ev)
+                                    prev_results[dist] = engine.infer(current_ev)
                                     st.session_state["zz_results"] = prev_results
 
-                                    # 地图限频重建
-                                    _maybe_bump_map()
-
                                     record = {
-                                        "station": img_station,
-                                        "task_type": img_task,
-                                        "filename": img_file,
-                                        "save_path": img_path,
-                                        "result": result,
-                                        "bn_evidence": bn_evidence,
-                                        "summary": " | ".join(summary_parts),
+                                        "station": stn, "task_type": task, "filename": fname,
+                                        "save_path": path, "result": result,
+                                        "bn_evidence": bn_evidence, "summary": " | ".join(summary_parts),
                                     }
                                     img_records = st.session_state["_stream_image_records"]
                                     img_records.append(record)
                                     if len(img_records) > 50:
                                         img_records = img_records[-50:]
                                     st.session_state["_stream_image_records"] = img_records
-
-                                    st.success(f"📷 {img_station} {task_label}识别完成: {' | '.join(summary_parts)}")
-                                else:
-                                    st.error(f"❌ 图片识别失败: {result['error']}")
-                            else:
-                                st.warning(f"⚠️ 不支持的任务类型: {img_task}")
                         except Exception as e:
-                            st.error(f"❌ 图片处理异常: {e}")
                             import traceback
                             traceback.print_exc()
-                    else:
-                        st.warning(f"⚠️ 图片文件不存在: {img_path}")
+                        finally:
+                            st.session_state["_stream_image_processing"] = False
 
-                st.session_state["_stream_image_processing"] = False
-                json_updated = True  # 触发 rerun 以便刷新界面
+                    threading.Thread(target=_bg_recognize,
+                                     args=(img_path, img_station, img_task, img_file, district),
+                                     daemon=True).start()
 
-            if json_updated:
-                st.rerun()
+            # 显示"识别中"提示
+            if st.session_state.get("_stream_image_processing", False):
+                st.info("⏳ 图片识别中…（完成后自动更新）")
+
+            # fragment 内 rerun 使用 scope="fragment"（仅刷新 fragment，不重跑全 app）
+            if need_rerun:
+                st.rerun(scope="fragment")
 
             # ── 显示图片识别结果摘要 ──
             img_records = st.session_state.get("_stream_image_records", [])
@@ -1815,7 +1809,7 @@ def render_zz_page():
                             f"{last_img_record.get('task_type', '?')} — "
                             f"{last_img_record.get('summary', '完成')}")
 
-            # ── 地图（利用 render_zz_map 内部缓存，仅证据变化时重建） ──
+            # ── 地图 ──
             current_results = st.session_state.get("zz_results", {})
             if current_results:
                 fig = render_zz_map(current_results, geojson,
@@ -1826,12 +1820,17 @@ def render_zz_page():
             else:
                 st.info("⏳ 等待数据到达… 请启动 ingest_server 和 simulate_data_stream")
 
-            # ── 趋势图 ──
-            st.markdown("---")
-            st.markdown("##### 📈 风险概率趋势（实时数据流）")
+            # ── 趋势图（降频：数据条数增加≥3 才重建） ──
             history = st.session_state["_era5_stream_received_data"]
             res_history = st.session_state["_era5_stream_results_history"]
-            if history and res_history:
+            trend_last_len = st.session_state.get("_stream_trend_last_len", 0)
+            rebuild_trend = (len(history) - trend_last_len) >= 3
+            if rebuild_trend:
+                st.session_state["_stream_trend_last_len"] = len(history)
+
+            st.markdown("---")
+            st.markdown("##### 📈 风险概率趋势（实时数据流）")
+            if history and res_history and rebuild_trend:
                 urban_districts = ["中原区", "二七区", "金水区", "管城回族区", "惠济区", "上街区"]
                 mountain_districts = ["巩义市", "登封市", "新密市"]
                 trend_times = []
@@ -1842,7 +1841,6 @@ def render_zz_page():
                     data = history[idx]
                     ts = data.get("timestamp", f"#{idx}")
                     trend_times.append(ts[-8:] if len(ts) >= 8 else ts)
-
                     results = res_history[idx] if idx < len(res_history) else {}
                     f_probs = []
                     for d in urban_districts:
@@ -1854,7 +1852,6 @@ def render_zz_page():
                             high_idx = states.index("高") if "高" in states else -1
                             f_probs.append(probs[high_idx] if high_idx >= 0 else 0)
                     flood_probs.append(np.mean(f_probs) if f_probs else 0)
-
                     g_probs = []
                     for d in mountain_districts:
                         r = results.get(d, {})
@@ -1886,6 +1883,9 @@ def render_zz_page():
                     st.plotly_chart(trend_fig, use_container_width=True)
                 else:
                     st.info("⏳ 趋势数据加载中…")
+            elif history and res_history:
+                # 数据不足 3 条时不重建，显示简短提示
+                st.caption(f"趋势图已更新（共 {len(history)} 条数据，每增 3 条刷新）")
             else:
                 st.info("⏳ 趋势数据加载中…")
 
