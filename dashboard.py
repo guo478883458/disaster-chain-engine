@@ -263,6 +263,8 @@ def init_session_state():
         "_era5_stream_last_count": 0,  # 上次轮询时的已接收条数
         "_era5_stream_received_data": [],  # 数据流模式已接收数据列表
         "_era5_stream_results_history": [],  # 数据流模式各点推理结果
+        # 数据流模式 - 地图降频
+        "_map_last_rebuild_time": 0.0,  # 上次地图重建时间戳（限频用）
         # 数据流模式 - 图片通道
         "_stream_image_last_count": 0,  # 上次轮询时的图片已接收条数
         "_stream_image_records": [],    # 已处理的图片记录 [{station, task_type, save_path, ...}]
@@ -1602,68 +1604,79 @@ def render_zz_page():
 
 
     def _render_stream_mode(engine, geojson):
-        """数据流模式：轮询 ingest_server 接收实时数据，自动更新（含图片通道）"""
-        # 轮询 ingest_server
-        st.markdown("##### 📡 数据流模式 — 实时数据接收")
-        st.caption("> 需同时运行：`ingest_server.py`（接收服务） + `simulate_data_stream.py`（发包程序）")
+        """数据流模式：轮询 ingest_server 接收实时数据，自动更新（含图片通道）
+        优化：st.fragment 局部刷新 + 单区推理 + 地图降频
+        """
+        @st.fragment(run_every=2)
+        def _stream_fragment():
+            # 本地辅助：地图重建限频（每 5 秒最多 bump 一次）
+            def _maybe_bump_map():
+                import time
+                now = time.time()
+                last = st.session_state.get("_map_last_rebuild_time", 0.0)
+                if now - last >= 5.0:
+                    st.session_state["_map_cache_version"] = st.session_state.get("_map_cache_version", 0) + 1
+                    st.session_state["_map_last_rebuild_time"] = now
 
-        count, last_data, last_time = fetch_ingest_data()
+            # 轮询 ingest_server
+            count, last_data, last_time = fetch_ingest_data()
+            status_data = poll_ingest_server()
+            image_count = status_data.get("image_received_count", 0)
+            last_image = status_data.get("last_image")
 
-        # ── 轮询图片通道状态 ──
-        status_data = poll_ingest_server()
-        image_count = status_data.get("image_received_count", 0)
-        last_image = status_data.get("last_image")
+            # ── JSON 通道状态 ──
+            st.markdown("**📊 JSON 数据通道**")
+            col_stream = st.columns([2, 1, 1])
+            with col_stream[0]:
+                st.metric("已接收数据条数", count)
+            with col_stream[1]:
+                if last_data:
+                    rain = last_data.get("降水强度", "?")
+                    station = last_data.get("station", "?")
+                    st.metric("最近数据", f"{station} 降水={rain}")
+                else:
+                    st.metric("最近数据", "—")
+            with col_stream[2]:
+                if last_time:
+                    try:
+                        from datetime import datetime
+                        last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S.%f")
+                        ago = (datetime.now() - last_dt).total_seconds()
+                        st.metric("接收时间", f"{ago:.0f} 秒前")
+                    except Exception:
+                        st.metric("接收时间", last_time)
+                else:
+                    st.metric("接收时间", "—")
 
-        # ── JSON 通道状态 ──
-        st.markdown("**📊 JSON 数据通道**")
-        col_stream = st.columns([2, 1, 1])
-        with col_stream[0]:
-            st.metric("已接收数据条数", count)
-        with col_stream[1]:
-            if last_data:
-                rain = last_data.get("降水强度", "?")
-                station = last_data.get("station", "?")
-                st.metric("最近数据", f"{station} 降水={rain}")
-        with col_stream[2]:
-            if last_time:
-                try:
-                    from datetime import datetime
-                    last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M:%S.%f")
-                    ago = (datetime.now() - last_dt).total_seconds()
-                    st.metric("接收时间", f"{ago:.0f} 秒前")
-                except Exception:
-                    st.metric("接收时间", last_time)
+            # ── 图片通道状态 ──
+            st.markdown("**📷 图片通道**")
+            col_img = st.columns([2, 2, 1])
+            with col_img[0]:
+                st.metric("已接收图片数", image_count)
+            with col_img[1]:
+                if last_image:
+                    img_station = last_image.get("station", "?")
+                    img_task = last_image.get("task_type", "?")
+                    st.metric("最近图片", f"{img_station} {img_task}")
+                else:
+                    st.metric("最近图片", "—")
+            with col_img[2]:
+                img_time = status_data.get("last_image_time")
+                if img_time:
+                    try:
+                        from datetime import datetime
+                        img_dt = datetime.strptime(img_time, "%Y-%m-%d %H:%M:%S.%f")
+                        ago = (datetime.now() - img_dt).total_seconds()
+                        st.metric("接收时间", f"{ago:.0f} 秒前")
+                    except Exception:
+                        st.metric("接收时间", img_time)
+                else:
+                    st.metric("接收时间", "—")
 
-        # ── 图片通道状态 ──
-        st.markdown("**📷 图片通道**")
-        col_img = st.columns([2, 2, 1])
-        with col_img[0]:
-            st.metric("已接收图片数", image_count)
-        with col_img[1]:
-            if last_image:
-                img_station = last_image.get("station", "?")
-                img_task = last_image.get("task_type", "?")
-                img_file = last_image.get("original_filename", "?")
-                st.metric("最近图片", f"{img_station} {img_task}")
-            else:
-                st.metric("最近图片", "—")
-        with col_img[2]:
-            img_time = status_data.get("last_image_time")
-            if img_time:
-                try:
-                    from datetime import datetime
-                    img_dt = datetime.strptime(img_time, "%Y-%m-%d %H:%M:%S.%f")
-                    ago = (datetime.now() - img_dt).total_seconds()
-                    st.metric("接收时间", f"{ago:.0f} 秒前")
-                except Exception:
-                    st.metric("接收时间", img_time)
-            else:
-                st.metric("接收时间", "—")
-
-        # ── 检测 JSON 新数据 ──
-        if count > st.session_state["_era5_stream_last_count"]:
-            st.session_state["_era5_stream_last_count"] = count
-            with st.spinner("⏳ 正在接收并推理最新数据…"):
+            # ── 检测 JSON 新数据（单区推理，不复用全量） ──
+            json_updated = False
+            if count > st.session_state["_era5_stream_last_count"]:
+                st.session_state["_era5_stream_last_count"] = count
                 if last_data and last_data.get("station"):
                     station = last_data["station"]
                     district = station.replace("郑州-", "").strip()
@@ -1676,13 +1689,15 @@ def render_zz_page():
                                 current_ev[node] = state
                         st.session_state["zz_evidence"][district] = current_ev
 
-                        results = {}
-                        for d in ZHENGZHOU_DISTRICTS:
-                            district_ev = st.session_state.get("zz_evidence", {}).get(d, {})
-                            results[d] = engine.infer(district_ev)
-                        st.session_state["zz_results"] = results
-                        st.session_state["_map_cache_version"] += 1
+                        # 核心优化：只推理受影响区，其余复用上一轮结果
+                        prev_results = st.session_state.get("zz_results", {}).copy()
+                        prev_results[district] = engine.infer(current_ev)
+                        st.session_state["zz_results"] = prev_results
 
+                        # 地图限频重建
+                        _maybe_bump_map()
+
+                        # 记录历史
                         history = st.session_state["_era5_stream_received_data"]
                         history.append(last_data)
                         if len(history) > 200:
@@ -1690,216 +1705,213 @@ def render_zz_page():
                         st.session_state["_era5_stream_received_data"] = history
 
                         res_history = st.session_state["_era5_stream_results_history"]
-                        res_history.append(results)
+                        res_history.append(prev_results)
                         if len(res_history) > 200:
                             res_history = res_history[-200:]
                         st.session_state["_era5_stream_results_history"] = res_history
+                        json_updated = True
 
-            st.rerun()
+            # ── 检测图片新数据（后台线程，不阻塞） ──
+            if image_count > st.session_state["_stream_image_last_count"] and not st.session_state.get("_stream_image_processing", False):
+                st.session_state["_stream_image_last_count"] = image_count
+                st.session_state["_stream_image_processing"] = True
 
-        # ── 检测图片新数据（独立处理，不阻塞 JSON 通道） ──
-        if image_count > st.session_state["_stream_image_last_count"] and not st.session_state.get("_stream_image_processing", False):
-            st.session_state["_stream_image_last_count"] = image_count
-            st.session_state["_stream_image_processing"] = True
+                if last_image and last_image.get("save_path"):
+                    img_path = last_image["save_path"]
+                    img_station = last_image.get("station", "")
+                    img_task = last_image.get("task_type", "")
+                    img_file = last_image.get("original_filename", "")
 
-            # 处理新图片（在 spinner 中执行）
-            if last_image and last_image.get("save_path"):
-                img_path = last_image["save_path"]
-                img_station = last_image.get("station", "")
-                img_task = last_image.get("task_type", "")
-                img_file = last_image.get("original_filename", "")
+                    district = img_station.replace("郑州-", "").strip()
+                    if district not in ZHENGZHOU_DISTRICTS:
+                        district = img_station
 
-                district = img_station.replace("郑州-", "").strip()
-                if district not in ZHENGZHOU_DISTRICTS:
-                    district = img_station
+                    task_labels = {"water_level": "水位尺", "road": "道路损毁", "flood": "洪水"}
+                    task_label = task_labels.get(img_task, img_task)
 
-                task_labels = {"water_level": "水位尺", "road": "道路损毁", "flood": "洪水"}
-                task_label = task_labels.get(img_task, img_task)
+                    st.markdown(f"⏳ 正在识别图片（{task_label}）…")
 
-                status_placeholder = st.empty()
-                with status_placeholder:
-                    st.spinner(f"⏳ 正在识别图片（{task_label}）…")
+                    if os.path.exists(img_path):
+                        try:
+                            from tools.fuse_infer import TASK_DISPATCH
+                            from tools.preprocess_api import map_to_bn_states
 
-                if os.path.exists(img_path):
-                    try:
-                        # 调用 fuse_infer 的底层推理（仅单图识别 + BN 映射，不触发全量推理）
-                        from tools.fuse_infer import TASK_DISPATCH
-                        from tools.preprocess_api import map_to_bn_states
+                            handler = TASK_DISPATCH.get(img_task)
+                            if handler and district in ZHENGZHOU_DISTRICTS:
+                                result = handler(img_path)
+                                if "error" not in result:
+                                    evidence_kwargs = {}
+                                    summary_parts = []
+                                    if img_task == "water_level":
+                                        wl = result.get("water_level_cm")
+                                        if wl is not None:
+                                            evidence_kwargs["water_level_cm"] = wl
+                                            summary_parts.append(f"水位：{wl}cm")
+                                    elif img_task == "road":
+                                        total = result.get("total_damages", 0)
+                                        evidence_kwargs["road_damage_counts"] = total
+                                        summary_parts.append(f"损毁：{total}处")
+                                    elif img_task == "flood":
+                                        area = result.get("积水面积_m2")
+                                        if area is not None:
+                                            evidence_kwargs["flood_area_m2"] = area
+                                            summary_parts.append(f"积水面积：{area:.0f}m²")
 
-                        handler = TASK_DISPATCH.get(img_task)
-                        if handler and district in ZHENGZHOU_DISTRICTS:
-                            result = handler(img_path)
-                            if "error" not in result:
-                                # 根据 task_type 收集证据字段
-                                evidence_kwargs = {}
-                                summary_parts = []
-                                if img_task == "water_level":
-                                    wl = result.get("water_level_cm")
-                                    if wl is not None:
-                                        evidence_kwargs["water_level_cm"] = wl
-                                        summary_parts.append(f"水位：{wl}cm")
-                                elif img_task == "road":
-                                    total = result.get("total_damages", 0)
-                                    evidence_kwargs["road_damage_counts"] = total
-                                    summary_parts.append(f"损毁：{total}处")
-                                elif img_task == "flood":
-                                    area = result.get("积水面积_m2")
-                                    if area is not None:
-                                        evidence_kwargs["flood_area_m2"] = area
-                                        summary_parts.append(f"积水面积：{area:.0f}m²")
+                                    bn_evidence = map_to_bn_states(**evidence_kwargs)
 
-                                # 映射到 BN 状态
-                                bn_evidence = map_to_bn_states(**evidence_kwargs)
+                                    # 合并到该区证据
+                                    current_ev = st.session_state.get("zz_evidence", {}).get(district, {}).copy()
+                                    for node, state in bn_evidence.items():
+                                        if state != "保持先验":
+                                            current_ev[node] = state
+                                    st.session_state["zz_evidence"][district] = current_ev
 
-                                # 合并到该区证据
-                                current_ev = st.session_state.get("zz_evidence", {}).get(district, {}).copy()
-                                for node, state in bn_evidence.items():
-                                    if state != "保持先验":
-                                        current_ev[node] = state
-                                st.session_state["zz_evidence"][district] = current_ev
+                                    # 核心优化：只推理受影响区，其余复用上一轮结果
+                                    prev_results = st.session_state.get("zz_results", {}).copy()
+                                    prev_results[district] = engine.infer(current_ev)
+                                    st.session_state["zz_results"] = prev_results
 
-                                # 全量推理
-                                results = {}
-                                for d in ZHENGZHOU_DISTRICTS:
-                                    district_ev = st.session_state.get("zz_evidence", {}).get(d, {})
-                                    results[d] = engine.infer(district_ev)
-                                st.session_state["zz_results"] = results
-                                st.session_state["_map_cache_version"] += 1
+                                    # 地图限频重建
+                                    _maybe_bump_map()
 
-                                # 记录图片处理结果
-                                record = {
-                                    "station": img_station,
-                                    "task_type": img_task,
-                                    "filename": img_file,
-                                    "save_path": img_path,
-                                    "result": result,
-                                    "bn_evidence": bn_evidence,
-                                    "summary": " | ".join(summary_parts),
-                                }
-                                img_records = st.session_state["_stream_image_records"]
-                                img_records.append(record)
-                                if len(img_records) > 50:
-                                    img_records = img_records[-50:]
-                                st.session_state["_stream_image_records"] = img_records
+                                    record = {
+                                        "station": img_station,
+                                        "task_type": img_task,
+                                        "filename": img_file,
+                                        "save_path": img_path,
+                                        "result": result,
+                                        "bn_evidence": bn_evidence,
+                                        "summary": " | ".join(summary_parts),
+                                    }
+                                    img_records = st.session_state["_stream_image_records"]
+                                    img_records.append(record)
+                                    if len(img_records) > 50:
+                                        img_records = img_records[-50:]
+                                    st.session_state["_stream_image_records"] = img_records
 
-                                status_placeholder.success(f"📷 {img_station} {task_label}识别完成: {' | '.join(summary_parts)}")
+                                    st.success(f"📷 {img_station} {task_label}识别完成: {' | '.join(summary_parts)}")
+                                else:
+                                    st.error(f"❌ 图片识别失败: {result['error']}")
                             else:
-                                status_placeholder.error(f"❌ 图片识别失败: {result['error']}")
-                        else:
-                            status_placeholder.warning(f"⚠️ 不支持的任务类型: {img_task}")
-                    except Exception as e:
-                        status_placeholder.error(f"❌ 图片处理异常: {e}")
-                        import traceback
-                        traceback.print_exc()
-                else:
-                    status_placeholder.warning(f"⚠️ 图片文件不存在: {img_path}")
+                                st.warning(f"⚠️ 不支持的任务类型: {img_task}")
+                        except Exception as e:
+                            st.error(f"❌ 图片处理异常: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        st.warning(f"⚠️ 图片文件不存在: {img_path}")
 
-            st.session_state["_stream_image_processing"] = False
-            st.rerun()
+                st.session_state["_stream_image_processing"] = False
+                json_updated = True  # 触发 rerun 以便刷新界面
 
-        # ── 显示图片识别结果摘要 ──
-        img_records = st.session_state.get("_stream_image_records", [])
-        if img_records:
-            last_img_record = img_records[-1]
-            st.markdown(f"📷 **最近识别**: {last_img_record.get('station', '?')} "
-                        f"{last_img_record.get('task_type', '?')} — "
-                        f"{last_img_record.get('summary', '完成')}")
+            if json_updated:
+                st.rerun()
 
-        current_results = st.session_state.get("zz_results", {})
-        if current_results:
-            with st.spinner("⏳ 正在渲染地图…"):
+            # ── 显示图片识别结果摘要 ──
+            img_records = st.session_state.get("_stream_image_records", [])
+            if img_records:
+                last_img_record = img_records[-1]
+                st.markdown(f"📷 **最近识别**: {last_img_record.get('station', '?')} "
+                            f"{last_img_record.get('task_type', '?')} — "
+                            f"{last_img_record.get('summary', '完成')}")
+
+            # ── 地图（利用 render_zz_map 内部缓存，仅证据变化时重建） ──
+            current_results = st.session_state.get("zz_results", {})
+            if current_results:
                 fig = render_zz_map(current_results, geojson,
                                     "郑州实时监测（数据流模式）",
                                     period=st.session_state["_map_cache_version"],
                                     height=480)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("⏳ 等待数据到达… 请启动 ingest_server 和 simulate_data_stream")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("⏳ 等待数据到达… 请启动 ingest_server 和 simulate_data_stream")
 
-        # ── 趋势图 ──
-        st.markdown("---")
-        st.markdown("##### 📈 风险概率趋势（实时数据流）")
-        history = st.session_state["_era5_stream_received_data"]
-        res_history = st.session_state["_era5_stream_results_history"]
-        if history and res_history:
-            urban_districts = ["中原区", "二七区", "金水区", "管城回族区", "惠济区", "上街区"]
-            mountain_districts = ["巩义市", "登封市", "新密市"]
-            trend_times = []
-            flood_probs = []
-            geo_probs = []
+            # ── 趋势图 ──
+            st.markdown("---")
+            st.markdown("##### 📈 风险概率趋势（实时数据流）")
+            history = st.session_state["_era5_stream_received_data"]
+            res_history = st.session_state["_era5_stream_results_history"]
+            if history and res_history:
+                urban_districts = ["中原区", "二七区", "金水区", "管城回族区", "惠济区", "上街区"]
+                mountain_districts = ["巩义市", "登封市", "新密市"]
+                trend_times = []
+                flood_probs = []
+                geo_probs = []
 
-            for idx in range(len(history)):
-                data = history[idx]
-                ts = data.get("timestamp", f"#{idx}")
-                trend_times.append(ts[-8:] if len(ts) >= 8 else ts)
+                for idx in range(len(history)):
+                    data = history[idx]
+                    ts = data.get("timestamp", f"#{idx}")
+                    trend_times.append(ts[-8:] if len(ts) >= 8 else ts)
 
-                results = res_history[idx] if idx < len(res_history) else {}
-                f_probs = []
-                for d in urban_districts:
-                    r = results.get(d, {})
-                    risk = r.get("内涝风险", {})
-                    if "probabilities" in risk:
-                        states = risk["states"]
-                        probs = risk["probabilities"]
-                        high_idx = states.index("高") if "高" in states else -1
-                        f_probs.append(probs[high_idx] if high_idx >= 0 else 0)
-                flood_probs.append(np.mean(f_probs) if f_probs else 0)
+                    results = res_history[idx] if idx < len(res_history) else {}
+                    f_probs = []
+                    for d in urban_districts:
+                        r = results.get(d, {})
+                        risk = r.get("内涝风险", {})
+                        if "probabilities" in risk:
+                            states = risk["states"]
+                            probs = risk["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            f_probs.append(probs[high_idx] if high_idx >= 0 else 0)
+                    flood_probs.append(np.mean(f_probs) if f_probs else 0)
 
-                g_probs = []
-                for d in mountain_districts:
-                    r = results.get(d, {})
-                    geo = r.get("地质灾害概率", {})
-                    if "probabilities" in geo:
-                        states = geo["states"]
-                        probs = geo["probabilities"]
-                        high_idx = states.index("高") if "高" in states else -1
-                        g_probs.append(probs[high_idx] if high_idx >= 0 else 0)
-                geo_probs.append(np.mean(g_probs) if g_probs else 0)
+                    g_probs = []
+                    for d in mountain_districts:
+                        r = results.get(d, {})
+                        geo = r.get("地质灾害概率", {})
+                        if "probabilities" in geo:
+                            states = geo["states"]
+                            probs = geo["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            g_probs.append(probs[high_idx] if high_idx >= 0 else 0)
+                    geo_probs.append(np.mean(g_probs) if g_probs else 0)
 
-            if trend_times:
-                trend_fig = go.Figure()
-                trend_fig.add_trace(go.Scatter(
-                    x=trend_times, y=flood_probs,
-                    mode="lines+markers", name="城区内涝 P(高)",
-                    line=dict(color="#E74C3C", width=2)))
-                trend_fig.add_trace(go.Scatter(
-                    x=trend_times, y=geo_probs,
-                    mode="lines+markers", name="山区地灾 P(高)",
-                    line=dict(color="#8E44AD", width=2)))
-                trend_fig.add_hline(y=0.5, line_dash="dot", line_color="gray", opacity=0.3)
-                trend_fig.update_layout(
-                    title=dict(text="风险概率实时变化", font=dict(size=14)),
-                    xaxis=dict(title="时间"),
-                    yaxis=dict(title="P(高)", range=[0, 1.05]),
-                    height=350, margin=dict(l=40, r=20, t=40, b=40),
-                    hovermode="x unified", legend=dict(orientation="h", y=-0.2))
-                st.plotly_chart(trend_fig, use_container_width=True)
+                if trend_times:
+                    trend_fig = go.Figure()
+                    trend_fig.add_trace(go.Scatter(
+                        x=trend_times, y=flood_probs,
+                        mode="lines+markers", name="城区内涝 P(高)",
+                        line=dict(color="#E74C3C", width=2)))
+                    trend_fig.add_trace(go.Scatter(
+                        x=trend_times, y=geo_probs,
+                        mode="lines+markers", name="山区地灾 P(高)",
+                        line=dict(color="#8E44AD", width=2)))
+                    trend_fig.add_hline(y=0.5, line_dash="dot", line_color="gray", opacity=0.3)
+                    trend_fig.update_layout(
+                        title=dict(text="风险概率实时变化", font=dict(size=14)),
+                        xaxis=dict(title="时间"),
+                        yaxis=dict(title="P(高)", range=[0, 1.05]),
+                        height=350, margin=dict(l=40, r=20, t=40, b=40),
+                        hovermode="x unified", legend=dict(orientation="h", y=-0.2))
+                    st.plotly_chart(trend_fig, use_container_width=True)
+                else:
+                    st.info("⏳ 趋势数据加载中…")
             else:
                 st.info("⏳ 趋势数据加载中…")
-        else:
-            st.info("⏳ 趋势数据加载中…")
 
-        if current_results:
-            with st.expander("📋 当前各区风险详情", expanded=False):
-                rows = []
-                for d in ZHENGZHOU_DISTRICTS:
-                    r = current_results.get(d, {})
-                    risk = r.get("内涝风险", {})
-                    geo = r.get("地质灾害概率", {})
-                    flood_p = "—"
-                    if "probabilities" in risk:
-                        states = risk["states"]
-                        probs = risk["probabilities"]
-                        high_idx = states.index("高") if "高" in states else -1
-                        flood_p = f"{probs[high_idx]*100:.1f}%" if high_idx >= 0 else "—"
-                    geo_p = "—"
-                    if "probabilities" in geo:
-                        states = geo["states"]
-                        probs = geo["probabilities"]
-                        high_idx = states.index("高") if "高" in states else -1
-                        geo_p = f"{probs[high_idx]*100:.1f}%" if high_idx >= 0 else "—"
-                    rows.append({"区县": d, "内涝风险 P(高)": flood_p, "地灾概率 P(高)": geo_p})
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            if current_results:
+                with st.expander("📋 当前各区风险详情", expanded=False):
+                    rows = []
+                    for d in ZHENGZHOU_DISTRICTS:
+                        r = current_results.get(d, {})
+                        risk = r.get("内涝风险", {})
+                        geo = r.get("地质灾害概率", {})
+                        flood_p = "—"
+                        if "probabilities" in risk:
+                            states = risk["states"]
+                            probs = risk["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            flood_p = f"{probs[high_idx]*100:.1f}%" if high_idx >= 0 else "—"
+                        geo_p = "—"
+                        if "probabilities" in geo:
+                            states = geo["states"]
+                            probs = geo["probabilities"]
+                            high_idx = states.index("高") if "高" in states else -1
+                            geo_p = f"{probs[high_idx]*100:.1f}%" if high_idx >= 0 else "—"
+                        rows.append({"区县": d, "内涝风险 P(高)": flood_p, "地灾概率 P(高)": geo_p})
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        _stream_fragment()
 
     # ═══════════════════════════════════════════════════════════════
     # Tab 1: 地图总览
