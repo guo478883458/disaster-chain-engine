@@ -26,6 +26,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
 import pandas as pd
+import threading
 import time
 from datetime import datetime
 
@@ -52,6 +53,10 @@ ZHENGZHOU_DISTRICTS = [
 
 # 演示数据目录
 DEMO_DIR = str(ZHENGZHOU_DIR)
+
+# ── 图片识别后台线程结果队列（线程安全，主线程轮询合并） ──
+_BG_IMAGE_RESULTS = []  # list of dicts, 每个元素是识别结果 record
+_BG_IMAGE_LOCK = threading.Lock()
 
 
 # ============================================================================
@@ -1729,61 +1734,102 @@ def render_zz_page():
                     if district not in ZHENGZHOU_DISTRICTS:
                         district = img_station
 
+                    # 后台线程执行识别，结果入全局队列，不碰 session_state
                     def _bg_recognize(path, stn, task, fname, dist):
+                        """后台线程：只做识别，结果入 _BG_IMAGE_RESULTS 队列"""
+                        import numpy as np
+                        record = {
+                            "station": stn, "task_type": task, "filename": fname,
+                            "save_path": path, "district": dist,
+                            "result": None, "error": None, "summary": "",
+                        }
                         try:
                             from tools.fuse_infer import TASK_DISPATCH
-                            from tools.preprocess_api import map_to_bn_states
                             handler = TASK_DISPATCH.get(task)
-                            if handler and dist in ZHENGZHOU_DISTRICTS:
+                            if handler:
                                 result = handler(path)
                                 if "error" not in result:
+                                    # JSON 安全化：numpy 类型转原生 Python 类型
+                                    result_safe = json.loads(json.dumps(result, default=str))
                                     evidence_kwargs = {}
                                     summary_parts = []
                                     if task == "water_level":
-                                        wl = result.get("water_level_cm")
+                                        wl = result_safe.get("water_level_cm")
                                         if wl is not None:
-                                            evidence_kwargs["water_level_cm"] = wl
+                                            evidence_kwargs["water_level_cm"] = float(wl)
                                             summary_parts.append(f"水位：{wl}cm")
                                     elif task == "road":
-                                        total = result.get("total_damages", 0)
-                                        evidence_kwargs["road_damage_counts"] = total
+                                        total = result_safe.get("total_damages", 0)
+                                        evidence_kwargs["road_damage_counts"] = int(total)
                                         summary_parts.append(f"损毁：{total}处")
                                     elif task == "flood":
-                                        area = result.get("积水面积_m2")
+                                        area = result_safe.get("积水面积_m2")
                                         if area is not None:
-                                            evidence_kwargs["flood_area_m2"] = area
+                                            evidence_kwargs["flood_area_m2"] = float(area)
                                             summary_parts.append(f"积水面积：{area:.0f}m²")
 
-                                    bn_evidence = map_to_bn_states(**evidence_kwargs)
-                                    current_ev = st.session_state.get("zz_evidence", {}).get(dist, {}).copy()
-                                    for node, state in bn_evidence.items():
-                                        if state != "保持先验":
-                                            current_ev[node] = state
-                                    st.session_state["zz_evidence"][dist] = current_ev
-
-                                    prev_results = st.session_state.get("zz_results", {}).copy()
-                                    prev_results[dist] = engine.infer(current_ev)
-                                    st.session_state["zz_results"] = prev_results
-
-                                    record = {
-                                        "station": stn, "task_type": task, "filename": fname,
-                                        "save_path": path, "result": result,
-                                        "bn_evidence": bn_evidence, "summary": " | ".join(summary_parts),
-                                    }
-                                    img_records = st.session_state["_stream_image_records"]
-                                    img_records.append(record)
-                                    if len(img_records) > 50:
-                                        img_records = img_records[-50:]
-                                    st.session_state["_stream_image_records"] = img_records
+                                    record["result"] = result_safe
+                                    record["evidence_kwargs"] = evidence_kwargs
+                                    record["summary"] = " | ".join(summary_parts)
+                                else:
+                                    record["error"] = result["error"]
+                            else:
+                                record["error"] = f"不支持的任务类型: {task}"
                         except Exception as e:
+                            record["error"] = str(e)
                             import traceback
                             traceback.print_exc()
                         finally:
-                            st.session_state["_stream_image_processing"] = False
+                            # 结果入全局队列，主线程轮询合并
+                            with _BG_IMAGE_LOCK:
+                                _BG_IMAGE_RESULTS.append(record)
 
                     threading.Thread(target=_bg_recognize,
                                      args=(img_path, img_station, img_task, img_file, district),
                                      daemon=True).start()
+
+            # ── 主线程轮询全局队列：合并后台识别结果到 session_state（有 ScriptRunContext） ──
+            if _BG_IMAGE_RESULTS:
+                from tools.preprocess_api import map_to_bn_states
+                with _BG_IMAGE_LOCK:
+                    pending = list(_BG_IMAGE_RESULTS)
+                    _BG_IMAGE_RESULTS.clear()
+                for bg_rec in pending:
+                    # 更新 session_state 标记
+                    st.session_state["_stream_image_processing"] = False
+                    if bg_rec.get("error"):
+                        continue
+                    dist = bg_rec.get("district", "")
+                    if dist in ZHENGZHOU_DISTRICTS and bg_rec.get("evidence_kwargs"):
+                        try:
+                            bn_evidence = map_to_bn_states(**bg_rec["evidence_kwargs"])
+                            # 用 setdefault 防御性初始化，防止用户没进过其他 tab 时缺 key
+                            st.session_state.setdefault("zz_evidence", {})
+                            st.session_state["zz_evidence"].setdefault(dist, {})
+                            for node, state in bn_evidence.items():
+                                if state != "保持先验":
+                                    st.session_state["zz_evidence"][dist][node] = state
+                            # 单区推理
+                            current_ev = st.session_state["zz_evidence"][dist]
+                            prev_results = st.session_state.get("zz_results", {}).copy()
+                            prev_results[dist] = engine.infer(current_ev)
+                            st.session_state["zz_results"] = prev_results
+                        except Exception as e:
+                            import traceback
+                            traceback.print_exc()
+                    # 记录到 session_state（即使 district 不在列表也保留识别记录）
+                    st.session_state.setdefault("_stream_image_records", [])
+                    display_rec = {
+                        "station": bg_rec.get("station", "?"),
+                        "task_type": bg_rec.get("task_type", "?"),
+                        "filename": bg_rec.get("filename", ""),
+                        "save_path": bg_rec.get("save_path", ""),
+                        "result": bg_rec.get("result"),
+                        "summary": bg_rec.get("summary", "完成"),
+                    }
+                    st.session_state["_stream_image_records"].append(display_rec)
+                    if len(st.session_state["_stream_image_records"]) > 50:
+                        st.session_state["_stream_image_records"] = st.session_state["_stream_image_records"][-50:]
 
             # 显示"识别中"提示
             if st.session_state.get("_stream_image_processing", False):

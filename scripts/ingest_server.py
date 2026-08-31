@@ -119,6 +119,11 @@ async def ingest_image(
         raise HTTPException(status_code=400,
                             detail=f"task_type 必须为 {ALLOWED_TASK_TYPES}，收到: {task_type}")
 
+    # station 为空时回退默认
+    if not station or station.strip() == "" or station.strip() == "-":
+        station = "郑州-惠济区"
+        print(f"  ⚠️ 图片上传 station 为空，已回退默认: {station}")
+
     # 校验图片内容
     contents = await file.read()
     if not contents:
