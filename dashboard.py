@@ -272,6 +272,8 @@ def init_session_state():
         "_stream_image_processing": False,  # 是否正在处理图片识别
         # 数据流模式 - 趋势图降频
         "_stream_trend_last_len": 0,    # 上次趋势图绘制时的 history 长度
+        # 数据流模式 - 切换状态
+        "_stream_mode_entering": False, # 是否正在进入数据流模式（用于切换提示）
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -2273,10 +2275,11 @@ def render_zz_page():
         if stream_mode == "数据流模式" and st.session_state["_era5_stream_mode"] != "stream":
             st.session_state["_era5_stream_mode"] = "stream"
             st.session_state["_era5_stream_last_count"] = 0
-            st.rerun()
+            st.session_state["_stream_mode_entering"] = True
+            # 不调用 st.rerun()——radio 自带自动 rerun，避免双重 rerun
         elif stream_mode == "回放模式" and st.session_state["_era5_stream_mode"] != "replay":
             st.session_state["_era5_stream_mode"] = "replay"
-            st.rerun()
+            # 不调用 st.rerun()——radio 自带自动 rerun，避免双重 rerun
 
         # ── 加载 ERA5 证据（回放模式需要） ──
         if st.session_state["_era5_stream_mode"] == "replay":
@@ -2296,6 +2299,24 @@ def render_zz_page():
         # 数据流模式
         # ═══════════════════════════════════════════════════════════
         else:
+            # ── 首次进入数据流模式时显示状态提示（页面级，只显示一次） ──
+            if st.session_state.get("_stream_mode_entering", False):
+                stream_status = st.status("正在进入数据流模式…", expanded=True)
+                try:
+                    import requests
+                    resp = requests.get(f"{INGEST_SERVER_URL}/api/status", timeout=1)
+                    if resp.status_code == 200:
+                        stream_status.update(label="✅ 数据流模式就绪（已连接接收服务）",
+                                             state="complete", expanded=False)
+                    else:
+                        stream_status.update(label="⚠️ 接收服务响应异常",
+                                             state="error", expanded=False)
+                except Exception:
+                    stream_status.update(
+                        label="⚠️ 未检测到接收服务（8502），请先启动 ingest_server.py",
+                        state="error", expanded=False)
+                st.session_state["_stream_mode_entering"] = False
+
             _render_stream_mode(engine, geojson)
 
     # ═══════════════════════════════════════════════════════════════
