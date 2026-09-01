@@ -63,9 +63,11 @@ IMAGE_KEYWORD_TASK = {
     "洪水": "flood",
     "水位尺": "water_level",
     "道路": "road",
+    "滑坡": "landslide",
     "water": "water_level",
     "road": "road",
     "flood": "flood",
+    "landslide": "landslide",
 }
 
 # 演示图片中的 task_type 标签（按排序后的文件名对应）
@@ -73,6 +75,7 @@ DEFAULT_IMAGE_TASKS = [
     ("1-洪水现场.jpg", "flood"),
     ("2-河道水位尺.jpg", "water_level"),
     ("3-道路路面.jpg", "road"),
+    ("滑坡-01.jpg", "landslide"),
 ]
 
 

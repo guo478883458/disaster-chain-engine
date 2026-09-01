@@ -364,8 +364,18 @@ class DisasterChainEngine:
             "missing_params": sorted(missing),
         }
 
-        # 执行推理
+        # 执行推理（跳过证据节点，pgmpy 不允许同一变量同时出现在 query 和 evidence 中）
         for node in self.get_node_names():
+            if node in evidence:
+                # 证据节点：返回 one-hot 分布（观测状态概率为 1）
+                states = self.get_node_config(node)["states"]
+                ev_state = evidence[node]
+                probs = [1.0 if s == ev_state else 0.0 for s in states]
+                result[node] = {
+                    "states": states,
+                    "probabilities": [round(float(p), 4) for p in probs],
+                }
+                continue
             try:
                 query = self.inference.query([node], evidence=evidence)
                 probs = query.values

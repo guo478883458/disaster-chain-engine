@@ -1767,6 +1767,11 @@ def render_zz_page():
                                         if area is not None:
                                             evidence_kwargs["flood_area_m2"] = float(area)
                                             summary_parts.append(f"积水面积：{area:.0f}m²")
+                                    elif task in ("landslide", "landslide_seg"):
+                                        area = result_safe.get("滑坡面积_m2")
+                                        if area is not None:
+                                            evidence_kwargs["landslide_area_m2"] = float(area)
+                                            summary_parts.append(f"滑坡面积：{area:.0f}m²")
 
                                     record["result"] = result_safe
                                     record["evidence_kwargs"] = evidence_kwargs

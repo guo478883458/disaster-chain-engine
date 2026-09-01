@@ -47,7 +47,7 @@ STREAM_UPLOADS_ROOT = r"H:\dev\disaster-data\stream_uploads"
 os.makedirs(STREAM_UPLOADS_ROOT, exist_ok=True)
 
 # ── 允许的 task_type ──
-ALLOWED_TASK_TYPES = ("water_level", "road", "flood")
+ALLOWED_TASK_TYPES = ("water_level", "road", "flood", "landslide")
 
 app = FastAPI(title="灾害链数据流接入服务", version="1.0.0")
 
@@ -102,7 +102,7 @@ async def ingest(data: SensorData):
 @app.post("/api/ingest_image")
 async def ingest_image(
     station: str = Form(..., description="区名，如 金水区"),
-    task_type: str = Form(..., description="任务类型: water_level / road / flood"),
+    task_type: str = Form(..., description="任务类型: water_level / road / flood / landslide"),
     file: UploadFile = File(..., description="灾情图片"),
 ):
     """

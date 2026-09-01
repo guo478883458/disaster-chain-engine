@@ -68,6 +68,21 @@ def _infer_flood(image_path: str) -> dict:
         return {"error": str(e), "积水面积_m2": None}
 
 
+def _infer_landslide(image_path: str) -> dict:
+    """调用 v2 滑坡分割（复用 ImageSegmenter(task="landslide")）"""
+    from tools.preprocess_api import process_image
+    try:
+        result = process_image(image_path, task="landslide")
+        # 统一输出格式：滑坡面积_m2
+        return {
+            "滑坡面积_m2": result.get("滑坡面积_m2"),
+            "灾情等级": result.get("灾情等级"),
+            "推理耗时_s": result.get("推理耗时_s"),
+        }
+    except Exception as e:
+        return {"error": str(e), "滑坡面积_m2": None}
+
+
 # ==================== 任务调度 ====================
 
 TASK_DISPATCH = {
@@ -76,6 +91,8 @@ TASK_DISPATCH = {
     "road_bridge": _infer_road_damage,
     "flood": _infer_flood,
     "flood_seg": _infer_flood,
+    "landslide": _infer_landslide,
+    "landslide_seg": _infer_landslide,
 }
 
 
@@ -154,6 +171,16 @@ def run_tasks(tasks: List[Tuple[str, str]]) -> Tuple[list, dict, list, dict]:
                         "task": task_type,
                         "reason": "洪水分割返回 None",
                     })
+            elif task_type in ("landslide", "landslide_seg"):
+                area = result.get("滑坡面积_m2")
+                if area is not None:
+                    evidence_kwargs["landslide_area_m2"] = area
+                else:
+                    missing_evidence.append({
+                        "image_path": img_path,
+                        "task": task_type,
+                        "reason": "滑坡分割返回 None",
+                    })
 
         details.append(detail)
 
@@ -193,6 +220,12 @@ def _extract_confidence(details: list) -> dict:
             confidence["flood"] = {
                 "area_m2": res.get("积水面积_m2"),
                 "inundation_ratio": res.get("淹没占比"),
+                "disaster_level": res.get("灾情等级"),
+                "source": "visual_recognition",
+            }
+        elif task in ("landslide", "landslide_seg"):
+            confidence["landslide"] = {
+                "area_m2": res.get("滑坡面积_m2"),
                 "disaster_level": res.get("灾情等级"),
                 "source": "visual_recognition",
             }
@@ -262,8 +295,8 @@ def fuse_infer(tasks: List[Tuple[str, str]],
 # ==================== CLI ====================
 
 def parse_task_arg(arg: str) -> Tuple[str, str]:
-    """解析 '路径:任务类型' 格式"""
-    parts = arg.split(":", 1)
+    """解析 '路径:任务类型' 格式（使用 rsplit 避免 Windows 盘符冒号冲突）"""
+    parts = arg.rsplit(":", 1)
     if len(parts) == 2:
         return parts[0].strip(), parts[1].strip()
     return parts[0].strip(), "flood"  # 默认 flood
@@ -274,7 +307,7 @@ def main():
         description="综合推理：图像识别 + 贝叶斯网络推理"
     )
     parser.add_argument("--tasks", "-t", nargs="+", metavar="路径:任务类型",
-                        help="任务列表，如 水位图.jpg:water_level 道路图.jpg:road")
+                        help="任务列表，如 水位图.jpg:water_level 道路图.jpg:road 滑坡图.jpg:landslide；支持 water_level/road/road_bridge/flood/flood_seg/landslide/landslide_seg")
     parser.add_argument("--config", "-c", type=str,
                         default=os.path.join(V2_ROOT, "configs", "config_40nodes.yaml"),
                         help="BN 配置文件路径")
