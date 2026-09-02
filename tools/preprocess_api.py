@@ -156,10 +156,10 @@ def map_to_bn_states(flood_area_m2: Optional[float] = None,
         ≥ 2000 m² → "深"
 
       滑坡面积 → 滑坡历史密度 [低, 中, 高]：
-        < 50 m² → 不设置（保持先验）
-        50~200 m² → "低"
-        200~500 m² → "中"
-        ≥ 500 m² → "高"
+        < 40 m² → 不设置（保持先验）
+        40~120 m² → "低"
+        120~300 m² → "中"
+        ≥ 300 m² → "高"
 
       水位 cm → 河道水位 [正常, 警戒, 危险]（阈值可调）：
         < 120 cm → "正常"
@@ -208,11 +208,11 @@ def map_to_bn_states(flood_area_m2: Optional[float] = None,
 
     # 滑坡历史密度 [低, 中, 高]（config_40nodes.yaml 3态，根节点）
     if landslide_area_m2 is not None:
-        if landslide_area_m2 < 50:
+        if landslide_area_m2 < 40:
             pass  # 保持先验
-        elif landslide_area_m2 < 200:
+        elif landslide_area_m2 < 120:
             states["滑坡历史密度"] = "低"
-        elif landslide_area_m2 < 500:
+        elif landslide_area_m2 < 300:
             states["滑坡历史密度"] = "中"
         else:
             states["滑坡历史密度"] = "高"

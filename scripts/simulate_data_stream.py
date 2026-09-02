@@ -3,14 +3,17 @@
 ===================
 模拟"传感器/数据源持续上报"，按设定间隔向 ingest_server 发送气象/水位数据。
 
-两种模式（--mode）：
+三种模式（--mode）：
   era5：按顺序回放 ERA5 144 小时序列（复用 era5_hourly_evidence.json 的 evidence）
   random：随机波动数据，模拟真实传感器噪声
+  image：从指定目录扫描图片，按任务类型分组轮换上传
 
 用法：
   python scripts/simulate_data_stream.py
   python scripts/simulate_data_stream.py --mode random --interval 1 --count 50
   python scripts/simulate_data_stream.py --mode era5 --interval 3 --count 144
+  python scripts/simulate_data_stream.py --mode image --tasks landslide
+  python scripts/simulate_data_stream.py --mode image --tasks flood,road,landslide
 """
 import argparse
 import glob
@@ -76,6 +79,10 @@ DEFAULT_IMAGE_TASKS = [
     ("2-河道水位尺.jpg", "water_level"),
     ("3-道路路面.jpg", "road"),
     ("滑坡-01.jpg", "landslide"),
+    ("滑坡-02.jpg", "landslide"),
+    ("滑坡-03.jpg", "landslide"),
+    ("滑坡-04.jpg", "landslide"),
+    ("滑坡-05.jpg", "landslide"),
 ]
 
 
@@ -157,6 +164,9 @@ def scan_image_dir(image_dir: str) -> list:
     image_files = []
     for fname in sorted(os.listdir(image_dir)):
         if fname.lower().endswith(valid_exts):
+            # 跳过 _tmp_test 等临时目录
+            if os.path.isdir(os.path.join(image_dir, fname)):
+                continue
             # 根据文件名关键词推断 task_type
             matched_task = None
             for keyword, task in IMAGE_KEYWORD_TASK.items():
@@ -211,6 +221,8 @@ def main():
                         help="指定站点（默认轮流使用郑州 12 区）")
     parser.add_argument("--image-dir", type=str, default=None,
                         help="图片模式：图片目录路径（默认使用演示图片）")
+    parser.add_argument("--tasks", type=str, default=None,
+                        help="图片模式：逗号分隔的任务类型，如 landslide 或 flood,road,landslide（不传则全部推送）")
     args = parser.parse_args()
 
     # 图片模式默认 15 秒间隔
@@ -227,6 +239,8 @@ def main():
     if args.mode == "image":
         image_dir = args.image_dir or DEFAULT_IMAGE_DIR
         print(f"   图片源: {image_dir}")
+        if args.tasks:
+            print(f"   任务过滤: {args.tasks}")
     print()
 
     # 加载 ERA5 数据（era5 模式需要）
@@ -253,9 +267,30 @@ def main():
                 full_path = os.path.join(image_dir, img_name)
                 if os.path.exists(full_path):
                     image_tasks.append((full_path, task, img_name))
-        print(f"   ✅ 已扫描图片: {len(image_tasks)} 张")
-        for fp, tk, fn in image_tasks:
-            print(f"       - {fn} → {tk}")
+
+        # --tasks 过滤：只保留指定任务类型的图片
+        if args.tasks:
+            allowed = set(t.strip() for t in args.tasks.split(","))
+            image_tasks = [t for t in image_tasks if t[1] in allowed]
+            print(f"   🔍 过滤任务: {allowed}，剩余 {len(image_tasks)} 张")
+            if not image_tasks:
+                print(f"   ❌ 过滤后无可用图片，请检查 --tasks 参数")
+                sys.exit(1)
+
+        # 按任务类型分组
+        task_groups = {}  # {task_type: [(path, task, fname), ...]}
+        for item in image_tasks:
+            task_groups.setdefault(item[1], []).append(item)
+        # 每组内按文件名排序
+        for grp in task_groups.values():
+            grp.sort(key=lambda x: x[2])
+        task_order = sorted(task_groups.keys())  # 固定轮换顺序
+
+        print(f"   ✅ 已扫描图片: {len(image_tasks)} 张，分组: {len(task_groups)} 类")
+        for tp, grp in sorted(task_groups.items()):
+            print(f"       - {tp}: {len(grp)} 张")
+            for fp, tk, fn in grp:
+                print(f"           {fn}")
 
     # 确定站点列表
     stations = [args.station] if args.station else ZHENGZHOU_DISTRICTS
@@ -270,9 +305,18 @@ def main():
             break
 
         if args.mode == "image" and image_tasks:
-            # 图片模式：按 station 轮换，每张图对应正确 task_type
-            task_idx = image_idx % len(image_tasks)
-            image_path, task_type, fname = image_tasks[task_idx]
+            # 图片模式：分组轮换——每轮从每组各取一张未发送的图
+            # task_groups: {task_type: [(path, task, fname), ...]}
+            # task_order: [task_type, ...] 固定轮换顺序
+            # group_idx: {task_type: current_index} 组内轮转指针
+            if 'group_idx' not in locals():
+                group_idx = {tp: 0 for tp in task_order}
+            # 从当前组取一张图
+            current_task = task_order[sent % len(task_order)]
+            group_items = task_groups[current_task]
+            idx = group_idx[current_task] % len(group_items)
+            image_path, task_type, fname = group_items[idx]
+            group_idx[current_task] = idx + 1
             station = stations[sent % len(stations)]
 
             print(f"  已发送图片 {sent + 1}/{args.count or '∞'}: {station} {task_type} {fname}…", end="")

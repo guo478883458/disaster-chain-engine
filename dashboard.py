@@ -1840,13 +1840,35 @@ def render_zz_page():
             if st.session_state.get("_stream_image_processing", False):
                 st.info("⏳ 图片识别中…（完成后自动更新）")
 
-            # ── 显示图片识别结果摘要 ──
+            # ── 显示图片识别结果摘要（按任务类型分类展示） ──
             img_records = st.session_state.get("_stream_image_records", [])
             if img_records:
-                last_img_record = img_records[-1]
-                st.markdown(f"📷 **最近识别**: {last_img_record.get('station', '?')} "
-                            f"{last_img_record.get('task_type', '?')} — "
-                            f"{last_img_record.get('summary', '完成')}")
+                st.markdown("#### 📷 各类识别记录")
+                # 按 task_type 分组，每组取最新一条
+                task_type_order = ["water_level", "road", "flood", "landslide"]
+                task_type_labels = {
+                    "water_level": "水位尺",
+                    "road": "道路",
+                    "flood": "洪水",
+                    "landslide": "滑坡",
+                }
+                latest_per_type = {}
+                for rec in img_records:
+                    tt = rec.get("task_type", "?")
+                    latest_per_type[tt] = rec  # 按遍历顺序，后覆盖前，保留最新
+
+                col_list = st.columns(len(task_type_order))
+                for col, tt in zip(col_list, task_type_order):
+                    label = task_type_labels.get(tt, tt)
+                    with col:
+                        st.markdown(f"**{label}**")
+                        if tt in latest_per_type:
+                            rec = latest_per_type[tt]
+                            st.caption(f"{rec.get('station', '?')}")
+                            st.caption(f"{rec.get('summary', '完成')}")
+                            st.caption(f"{rec.get('filename', '')}")
+                        else:
+                            st.caption("暂无记录")
 
             # ── 最近接收数据 expander（JSON 明细） ──
             history = st.session_state.get("_era5_stream_received_data", [])
@@ -1865,10 +1887,10 @@ def render_zz_page():
                 else:
                     st.info("暂无数据")
 
-            # ── 最近图片识别 expander（图片明细） ──
-            with st.expander("📷 最近图片识别（显示最近 5 条）", expanded=False):
+            # ── 全部历史记录 expander（图片明细，不超过 50 条） ──
+            with st.expander("📷 全部历史记录", expanded=False):
                 if img_records:
-                    recent_img = img_records[-5:]
+                    recent_img = img_records[-50:]
                     img_rows = []
                     for rec in recent_img:
                         img_rows.append({
